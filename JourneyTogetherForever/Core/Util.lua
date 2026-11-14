@@ -1,0 +1,300 @@
+-- Small helpers shared by every module.
+local _, ns = ...
+local L = ns.L
+
+-- "#C08A2E" or "C08A2E" -> 0.75, 0.54, 0.18
+function ns.Hex(hex)
+  hex = hex:gsub("^#", "")
+  return tonumber(hex:sub(1, 2), 16) / 255, tonumber(hex:sub(3, 4), 16) / 255, tonumber(hex:sub(5, 6), 16) / 255
+end
+
+function ns.Clamp(v, lo, hi) return math.max(lo, math.min(hi, v)) end
+
+-- A short fingerprint of a text (djb2): copies compare these instead of sending themselves (Sync, Clears, Conflicts).
+function ns.Hash(s)
+  local h = 5381
+  for i = 1, #s do h = (h * 33 + s:byte(i)) % 4294967296 end
+  return h
+end
+
+-- A level-up starts several jobs. Each waits its own moment, so they run in separate frames within two seconds
+-- instead of all on the game's busiest second (U73); the state goes first, so the others hear of it at once.
+ns.LEVEL_UP = { state = 1, characters = 1.3, race = 1.6, attune = 1.9 }
+
+-- Messages between modules: ns:On("SETTING", fn), ns:Fire("SETTING", key, value).
+local listeners = {}
+function ns:On(event, fn)
+  listeners[event] = listeners[event] or {}
+  table.insert(listeners[event], fn)
+end
+
+function ns:Fire(event, ...)
+  for _, fn in ipairs(listeners[event] or {}) do fn(...) end
+end
+
+---------------------------------------------------------------------------
+-- Names. Heroes are stored as "Name-Realm" and shown as "Name".
+---------------------------------------------------------------------------
+-- The realm the game puts this character on ("CAMWOWEU4Realm9RPPvP" in WoW Forever).
+function ns.GameRealm()
+  local r = GetNormalizedRealmName and GetNormalizedRealmName()
+  if not r or r == "" then r = (GetRealmName() or ""):gsub("[%s%-]", "") end
+  return r
+end
+
+-- WoW Forever splits each ruleset (PvE, PvP, RP, Hardcore) over numbered realms ("CAMWOW EU4 Realm 9 RP PvP"), and a
+-- name is one character in its whole ruleset. Two Adventurers on one ruleset can be on two realms: when keys ended with
+-- each addon's own realm, the copy of the fellowship an invited player got named them under another realm, and their
+-- addon dropped it (the first invite in Forever, 5 Nov 2026). So keys end with the ruleset, the same for everyone on it
+-- (as Syndicator, Auctionator and AceDB keep Forever characters): "Arielas Fireson-PvP".
+local function ruleset()
+  local R, E = C_GameRules, Enum and Enum.GameRule
+  if not (R and R.IsGameRuleActive and E) then return nil end
+  local function on(rule)
+    if rule == nil then return false end
+    local ok, active = pcall(R.IsGameRuleActive, rule)
+    return ok and active == true
+  end
+  local key = (on(E.HardcoreRuleset) and "HC" or "") .. (on(E.RPRuleset) and "RP" or "") .. (on(E.PvPRuleset) and "PvP" or "")
+  return key ~= "" and key or "PvE"
+end
+
+-- The realm part of every key: your ruleset (your realm when the game does not say).
+function ns.Realm()
+  ns.ruleset = ns.ruleset or ruleset()
+  return ns.ruleset or ns.GameRealm()
+end
+
+-- Your realm, or one connected to it (GetAutoCompleteRealms; the game leaves the list empty when it has none).
+local function realmKey(r) return (r or ""):gsub("[%s%-]", ""):lower() end
+function ns.IsRealm(r)
+  if type(r) ~= "string" or r == "" then return false end
+  local k = realmKey(r)
+  if k == realmKey(ns.Realm()) or k == realmKey(ns.GameRealm()) or k == realmKey(GetRealmName and GetRealmName()) then return true end
+  local list = GetAutoCompleteRealms and GetAutoCompleteRealms()
+  for _, x in ipairs(type(list) == "table" and list or {}) do
+    if realmKey(x) == realmKey(r) then return true end
+  end
+  return false
+end
+
+-- WoW Forever names a character "First Surname" (each part letters only, unique together in the region). The game
+-- shows a space between the two and reads a hyphen as that space: an addon whisper to "Arielas-Realm" was looked for
+-- as "Arielas Realm" (the first check in Forever, 5 Nov 2026). So in Forever "First-Surname" is the same name, and a
+-- part after the hyphen that is no realm (realms here carry digits) is the surname. Keys stay "Name-Realm", with the
+-- ruleset for the realm (ns.Realm): "Arielas Fireson-PvP". Returns the name; the realm a name comes with (the
+-- sender's numbered realm) says nothing: it is always your ruleset.
+local function split(text)
+  local name, realm = text:match("^([^%-]+)%-?(.*)$")
+  if not name then return nil end
+  name = strtrim(name)
+  if realm ~= "" and not name:find(" ", 1, true) and not ns.IsRealm(realm) then
+    local sur = realm:match("^([^%-]+)")
+    if sur and not sur:find("[%s%d]") then name = name .. " " .. sur end
+  end
+  return name
+end
+
+function ns.FullName(name)
+  if not name or name == "" then return nil end
+  local base = split((strtrim(name):gsub("%s+", " ")))
+  if not base or base == "" then return nil end
+  return base .. "-" .. ns.Realm()
+end
+
+-- The game this copy runs in, as the game data names it (Data/Encounters.lua): "wowf", WoW Forever (the only game the
+-- addon supports since 6 Nov 2026).
+function ns.Game() return "wowf" end
+
+-- The game's level cap: WoW Forever's 60, the journey's own.
+function ns.LevelCap() return 60 end
+
+-- Trial accounts and accounts without game time cannot send addon messages, so a
+-- fellowship never hears them. Allowed, with a clear warning: a line on Welcome, a toast when founding or joining,
+-- and a bar across the book (27 Oct 2026).
+function ns.Trial()
+  -- (/jtf selftest pretends one, to show the warnings.)
+  if ns.Dev and ns.Dev.pretendTrial ~= nil then return ns.Dev.pretendTrial end
+  return (IsTrialAccount and IsTrialAccount()) or (IsVeteranTrialAccount and IsVeteranTrialAccount()) or false
+end
+
+
+-- "Name" ("First Surname" in WoW Forever).
+function ns.Short(name)
+  if not name then return "" end
+  return (name:match("^[^%-]+")) or name
+end
+
+-- The name where room is tight (tournament cards, the clears table): in WoW Forever the first name alone, as friends
+-- call each other; the whole name when another of the names given shares that first name (a fellowship's members,
+-- by key). (Check of 6 Nov 2026: "Malferion Oathstream" was cut on every card.)
+function ns.Brief(name, others)
+  local short = ns.Short(name)
+  local first = short:match("^(%S+)%s") or short
+  if first == short then return short end
+  for other in pairs(others or {}) do
+    if other ~= name and (ns.Short(other):match("^(%S+)") == first) then return short end
+  end
+  return first
+end
+
+-- A value the game keeps from addons (12.0's secret values: in combat and in instances). Never compare, join or
+-- keep one.
+function ns.Secret(v) return issecretvalue ~= nil and issecretvalue(v) or false end
+-- The value, or nil when it is secret: what the game says, where it may say nothing.
+function ns.Plain(v) if ns.Secret(v) then return nil end return v end
+
+-- The other members of f (not this character): who a change or a state goes to.
+function ns.Others(f)
+  local me, list = ns.Me(), {}
+  for name in pairs(f.members) do if name ~= me then list[#list + 1] = name end end
+  return list
+end
+
+-- The name alone (WoW Forever's names are unique in the region).
+function ns.Display(name)
+  return ns.Short(name)
+end
+
+-- Who an addon whisper goes to. WoW Forever: the name alone, "Arielas Fireson", as chat whispers it (with a realm the
+-- game took the realm for the surname and found nobody: the invite said "offline" though both were in one party).
+function ns.WhisperTarget(name)
+  return ns.Short(name)
+end
+
+function ns.Me()
+  -- While the book draws another character's fellowship (Fellowship/Watch.lua), "me" is that character.
+  local W = ns.Watch
+  if W and W.rendering and W.as then return W.as end
+  return ns.Self()
+end
+
+-- The character being played, also while the book draws another one's fellowship (the "player" unit, models).
+function ns.Self() return ns.UnitFull("player") or ns.FullName(UnitName("player")) end
+
+-- A player unit's key ("Name-Realm"); nil for none or a name the game keeps secret. UnitName gives the first name and
+-- the surname, and no realm (the player's own may come as one "First Surname").
+function ns.UnitFull(unit)
+  local n, r = UnitName(unit)
+  if issecretvalue and (issecretvalue(n) or issecretvalue(r)) then return nil end
+  if type(n) ~= "string" or n == "" then return nil end
+  if type(r) ~= "string" or r == "" then return ns.FullName(n) end
+  return ns.FullName(n:find(" ", 1, true) and n or (n .. " " .. r))
+end
+
+-- Character names as the game shows them: each part with a capital first letter ("arielas fireson" is "Arielas
+-- Fireson": WoW Forever's surname too; it was "Arielas fireson", whom the game did not find).
+function ns.CleanName(text)
+  local name = split((strtrim(text or ""):gsub("%s+", " ")))
+  if not name or name == "" then return nil end
+  -- (zhTW localization) A part with non-ASCII bytes (a Chinese name) stays as typed: upper/lower work on bytes and
+  -- cut its first character in half, so the invite went to a name no one has.
+  return (name:gsub("[^ ]+", function(p) if p:find("[\128-\255]") then return p end return p:sub(1, 1):upper() .. p:sub(2):lower() end))
+end
+
+---------------------------------------------------------------------------
+-- Time: "just now", "10 min ago", "3 hours ago", "yesterday", "2 days ago".
+---------------------------------------------------------------------------
+function ns.TimeAgo(t)
+  local d = math.max(0, time() - (t or 0))
+  if d < 60 then return L.TIME_JUST_NOW end
+  if d < 3600 then return L.TIME_MIN:format(math.floor(d / 60)) end
+  if d < 86400 then
+    local h = math.floor(d / 3600)
+    return h == 1 and L.TIME_HOUR or L.TIME_HOURS:format(h)
+  end
+  if d < 2 * 86400 then return L.TIME_YESTERDAY end
+  return L.TIME_DAYS:format(math.floor(d / 86400))
+end
+
+-- Time left: "45 min", "1 hour", "5 hours", "1 day", "3 days".
+function ns.TimeLeft(sec)
+  sec = math.max(0, sec or 0)
+  if sec < 3600 then return L.MINUTES_N:format(math.max(1, math.ceil(sec / 60))) end
+  if sec < 86400 then
+    local h = math.floor(sec / 3600)
+    return h == 1 and L.DUR_1H or L.HOURS_N:format(h)
+  end
+  local d = math.floor(sec / 86400)
+  return (d == 1 and L.DAYS_1 or L.DAYS_N):format(d)
+end
+
+---------------------------------------------------------------------------
+-- Addon versions: "v1.2.3" or "1.2.3-beta" -> { 1, 2, 3 }; nil for a development copy ("v1.8.0").
+---------------------------------------------------------------------------
+function ns.ParseVersion(v)
+  if type(v) ~= "string" then return nil end
+  local a, b, c = v:match("^v?(%d+)%.(%d+)%.?(%d*)")
+  if not a then return nil end
+  return { tonumber(a), tonumber(b), tonumber(c) or 0 }
+end
+
+-- Is version a newer than b? False when either is unknown.
+function ns.NewerVersion(a, b)
+  local x, y = ns.ParseVersion(a), ns.ParseVersion(b)
+  if not x or not y then return false end
+  for i = 1, 3 do
+    if x[i] ~= y[i] then return x[i] > y[i] end
+  end
+  return false
+end
+
+---------------------------------------------------------------------------
+-- Class colours from the mockup: bright on dark themes, ink on light ones.
+---------------------------------------------------------------------------
+local CLS = { WARRIOR = "C69B6D", PALADIN = "F48CBA", HUNTER = "AAD372", ROGUE = "FFF468", PRIEST = "E8E8E8", SHAMAN = "2459FF",
+  MAGE = "3FC7EB", WARLOCK = "8788EE", DRUID = "FF7C0A" }
+local CLS_INK = { WARRIOR = "7A5230", PALADIN = "A8406E", HUNTER = "4E7A2A", ROGUE = "7A6A00", PRIEST = "55555A", SHAMAN = "0A4AB8",
+  MAGE = "1A6E8E", WARLOCK = "4A3E9A", DRUID = "A8540A" }
+
+-- Item quality colours (0 poor … 7 heirloom): bright on dark themes, ink on light ones.
+local QCOL = { [0] = "9D9D9D", "FFFFFF", "1EFF00", "0070DD", "A335EE", "FF8000", "E6CC80", "00CCFF" }
+local QCOL_INK = { [0] = "6B6B6B", "3B2410", "1E7A00", "0058B0", "7A1FB8", "B85A00", "8A7A40", "007A99" }
+function ns.QualityHex(q, light) return (light and QCOL_INK or QCOL)[q or 1] or QCOL[1] end
+
+-- Returns a hex colour for a class token ("WARRIOR"), or nil for unknown classes.
+function ns.ClassHex(token, light)
+  if not token then return nil end
+  local hex = (light and CLS_INK or CLS)[token]
+  if hex then return hex end
+  local c = RAID_CLASS_COLORS and RAID_CLASS_COLORS[token]
+  if not c then return nil end
+  local k = light and 0.55 or 1
+  return ("%02X%02X%02X"):format(c.r * 255 * k, c.g * 255 * k, c.b * 255 * k)
+end
+
+-- Another addon's chat command, by any of its names ("/dj"): its function in SlashCmdList, or nil when that addon
+-- is not running. How the book opens the addons it works with (UI/OtherAddons.lua).
+function ns.SlashCommand(...)
+  local want = {}
+  for i = 1, select("#", ...) do want[select(i, ...)] = true end
+  for key, fn in pairs(SlashCmdList) do
+    for i = 1, 9 do
+      local cmd = _G["SLASH_" .. key .. i]
+      if type(cmd) ~= "string" then break end
+      if want[cmd:lower()] then return fn end
+    end
+  end
+  return nil
+end
+
+-- Notices marked Seen (U105 Inbox, U106 Needs attention): ns.char[list][key] = true. A notice's key holds what it
+-- says (a chapter, a level, a day count), so a changed notice counts again. Marking keeps only the keys still shown,
+-- so the list never grows.
+function ns.Seen(list, key) return key ~= nil and ns.char ~= nil and ns.char[list] ~= nil and ns.char[list][key] == true end
+-- shown: the notices shown now ({ key, ... } items).
+function ns.MarkSeen(list, key, shown)
+  local old, keep = ns.char[list] or {}, { [key] = true }
+  for _, item in ipairs(shown) do if item.key and old[item.key] then keep[item.key] = true end end
+  ns.char[list] = keep
+end
+-- The notices with .seen set, the seen ones moved last (in their order).
+function ns.SeenLast(list, items)
+  local fresh, seen = {}, {}
+  for _, item in ipairs(items) do
+    item.seen = ns.Seen(list, item.key)
+    if item.seen then seen[#seen + 1] = item else fresh[#fresh + 1] = item end
+  end
+  for _, item in ipairs(seen) do fresh[#fresh + 1] = item end
+  return fresh
+end

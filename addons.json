@@ -1,0 +1,17 @@
+{
+  "JourneyTogetherForever": {
+    "upstream": "https://www.curseforge.com/projects/1773988",
+    "author": "Vaderstrom",
+    "license": "MIT",
+    "changed": [
+      "Locales/zhTW.lua",
+      "JourneyTogetherForever.toc",
+      "Core/Settings.lua",
+      "Core/Util.lua",
+      "UI/Pages/Settings.lua",
+      "UI/Theme.lua",
+      "Fellowship/Pace.lua",
+      "Fellowship/Conflicts.lua"
+    ]
+  }
+}
