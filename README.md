@@ -37,5 +37,3 @@ repo 裡的 `JourneyTogetherForever/` 只放改過的檔案，方便看差異；
 各插件版權屬原作者，依原授權轉發；每個插件資料夾內附原作者的 LICENSE。
 
 - Journey Together Forever — Vaderstrom，MIT 授權，[CurseForge](https://www.curseforge.com/projects/1773988)
-
-翻譯有問題或想要其他插件中文化，開 Issue 告訴我。
