@@ -4,7 +4,7 @@
 
 | 插件 | 版本 | 下載 |
 |---|---|---|
-| Journey Together Forever | v1.9.0 | [下載 zip](../../releases/tag/JourneyTogetherForever-v1.9.0-zhtw) |
+| Journey Together Forever | v1.10.0 | [下載 zip](../../releases/tag/JourneyTogetherForever-v1.10.0-zhtw) |
 
 ## 安裝
 
@@ -22,13 +22,13 @@
 
 - 設定頁加上「繁體中文」語言選項，中文用戶端自動切換；介面改用遊戲內建中文字型。
 - 修正：中文角色名的第一個字被吃掉，導致邀請送不到（`Core/Util.lua`、`Fellowship/Conflicts.lua`）。
-- 修正：暫離狀態檢查在 Forever 回傳受保護值時出錯（`Fellowship/Pace.lua`）。
 - 地城、首領、任務名稱保留英文，因為插件要拿它們比對遊戲資料。
 
 repo 裡的 `JourneyTogetherForever/` 只放改過的檔案，方便看差異；要安裝請用 Releases 的完整 zip。
 
 ## 更新紀錄
 
+- **v1.10.0**（2026-11-17）：跟上原作者 v1.10.0。補翻新增的「地城任務」分頁、追蹤器旅程步驟、回到前一章、「先讓所有人達到上限」規則、WoW Forever 選擇性里程碑等字串。暫離檢查的錯誤原作者已修好，不再需要改 `Fellowship/Pace.lua`。
 - **v1.9.0**（2026-11-15）：跟上原作者 v1.9.0。補翻新增的職業任務、「在地圖上顯示」、排行統計、Spoken Places 提示等字串，並依新版介面改寫導覽與更新說明（邀請改在冒險者頁面）。
 - **v1.8.0**（2026-11-14）：第一版公開。
 

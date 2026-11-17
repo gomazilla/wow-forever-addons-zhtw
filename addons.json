@@ -10,7 +10,6 @@
       "Core/Util.lua",
       "UI/Pages/Settings.lua",
       "UI/Theme.lua",
-      "Fellowship/Pace.lua",
       "Fellowship/Conflicts.lua"
     ]
   }

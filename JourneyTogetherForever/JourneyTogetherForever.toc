@@ -2,7 +2,7 @@
 ## Title: |cffe2b857Journey Together|r Forever
 ## Notes: Level together with your fellowship, chapter by chapter.
 ## Author: Vaderstrom
-## Version: v1.9.0
+## Version: v1.10.0
 ## SavedVariables: JourneyTogetherForeverDB
 ## OptionalDeps: Questie
 ## SavedVariablesPerCharacter: JourneyTogetherForeverCharDB
@@ -98,6 +98,7 @@ UI\News.lua
 UI\Picture.lua
 UI\Photo.lua
 UI\Tracker.lua
+UI\QuestLog.lua
 UI\Minimap.lua
 UI\Pages\Settings.lua
 UI\Walkthrough.lua
