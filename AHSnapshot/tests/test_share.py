@@ -86,9 +86,9 @@ L.execute(r'''
   AHSnapshot.ImportInbox(dbOldIn2, "V^1^舊插件^1~S^PvE^" .. (NOW - 60) .. "^600^1^1^1^^1~R^1^5,1,10,10,10,3,1,0,0,0,30", NOW, 30)
   oldSc2 = dbOldIn2.shared["舊插件"].PvE.scans[1]
 ''')
-check('舊推估匯出時歸零、不比對', ('^1~R^1^5,1,10,10,10,0,0,0,0,0,0' in G.oldOut, '^600^0^' in G.oldOut), (True, True))
-check('匯入後價格保留、推估為 0', (G.oldSc['items']['1'], G.oldSc.diff), ('5,1,10,10,10,0,0,0,0,0,0', 0))
-check('沒有推估版本的資料只收價格', (G.oldSc2['items']['1'], G.oldSc2.diff, G.oldSc2.clearEst), ('5,1,10,10,10,0,0,0,0,0,0', 0, None))
+check('舊推估匯出時歸零、不比對', ('^1~R^1^5,1,10,10,10' in G.oldOut, '^600^0^' in G.oldOut), (True, True))
+check('匯入後價格保留、推估為 0', (G.oldSc['items']['1'], G.oldSc.diff), ('5,1,10,10,10', 0))
+check('沒有推估版本的資料只收價格', (G.oldSc2['items']['1'], G.oldSc2.diff, G.oldSc2.clearEst), ('5,1,10,10,10', 0, None))
 
 # 多人接在一起、不認得的類型、壞資料
 L.execute(r'''

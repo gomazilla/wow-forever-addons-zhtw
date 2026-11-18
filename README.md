@@ -5,7 +5,7 @@
 | 插件 | 版本 | 下載 |
 |---|---|---|
 | Journey Together Forever（繁中化） | v2.0.0 | [下載 zip](../../releases/tag/JourneyTogetherForever-v2.0.0-zhtw) |
-| AH Snapshot（自製） | v1.2.0 | [下載 zip](../../releases/tag/AHSnapshot-v1.2.0) |
+| AH Snapshot（自製） | v1.3.0 | [下載 zip](../../releases/tag/AHSnapshot-v1.3.0) |
 
 ## 自製插件
 

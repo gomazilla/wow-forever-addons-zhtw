@@ -55,7 +55,7 @@ G = L.globals()
 check('第一次不比對', G.s1.diff, 0)
 check('第二次有比對', G.s2.diff, 1)
 # 2589：更便宜的 20@100 還在、較貴的 20@110 消失 → 撤單，不是賣出
-check('較貴層單獨消失算撤單', G.s2['items']['2589'], '20,1,100,100,100,0,0,0,20,0,0')
+check('較貴層單獨消失算撤單', G.s2['items']['2589'], '20,1,100,100,100,0,0,0,20')
 # 4306：整疊從最低價被吃掉 → 賣出 10，1 筆成交
 check('全賣光的物品也留紀錄', G.s2['items']['4306'], '0,0,0,0,0,10,1,0,0,0,5000')
 check('存了兩次掃描', len(G.ah.scans), 2)
@@ -144,13 +144,21 @@ MOCKS = r'''
     Show = function() end, Hide = function(self) self.owner = nil end,
     IsOwned = function(self, o) return self.owner == o end,
   }
-  tickers = {}
-  C_Timer = { NewTicker = function(sec, fn) tickers[#tickers+1] = fn; return { Cancel = function() end } end }
-  function tick() for _, fn in ipairs(tickers) do fn() end end
+  tickers, afters = {}, {}
+  C_Timer = {
+    NewTicker = function(sec, fn)
+      local tk = { Cancel = function(self) self.cancelled = true end }
+      tickers[#tickers+1] = { fn = fn, tk = tk }
+      return tk
+    end,
+    After = function(sec, fn) afters[#afters+1] = fn end,
+  }
+  function tick() for _, t in ipairs(tickers) do if not t.tk.cancelled then t.fn(t.tk) end end end
+  function run_afters() local a = afters; afters = {}; for _, fn in ipairs(a) do fn() end end
   listener = nil
   Auctionator = { SavedState = {}, FullScan = { Events = { ScanComplete = "replicate_scan_complete" } },
     EventBus = { Register = function(_, l, ev) listener = l end } }
-  fire_event = function(ev) for _, h in ipairs(handlers) do h(nil, ev) end end
+  fire_event = function(ev, ...) for _, h in ipairs(handlers) do h(nil, ev, ...) end end
 '''
 L2 = new_lua()
 L2.execute(MOCKS)
@@ -447,8 +455,8 @@ L6.execute(r'''
 ''')
 G6 = L6.globals()
 check('升級提示', '舊版的賣出推估有誤' in G6.m1, True)
-check('升級後推估歸零、價格保留', G6.row, '20,1,100,100,100,0,0,0,0,0,0')
-check('舊快照清掉、版本 3', (G6.pv, G6.ver), (None, 3))
+check('升級後推估歸零、價格保留', G6.row, '20,1,100,100,100')
+check('舊快照清掉、升到最新版本', (G6.pv, G6.ver), (None, 4))
 check('提示只出現一次', '舊版的賣出推估有誤' in G6.m2, False)
 check('升級後下一次全掃當第一次', '第一次掃描' in G6.first_msg, True)
 

@@ -78,7 +78,7 @@ local ItemInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
 
 local function RememberItem(key, itemID, name)
   local items = AHSnapshotDB.items
-  if items[key] and items[key].sell then return end
+  if items[key] and items[key].sell and items[key].name then return end
   local ok, iname, _, quality, _, _, _, _, maxStack, _, _, sell, classID, subclassID = pcall(ItemInfo, itemID)
   if not ok then iname, quality, maxStack, sell, classID, subclassID = nil, nil, nil, nil, nil, nil end
   items[key] = {
@@ -118,6 +118,60 @@ local function Capture(rawFullScan)
   return listings, hasTL
 end
 
+-- 超過保留期的逐次掃描濃縮成每日紀錄（自己＋朋友合併後才濃縮，見 DESIGN.md）
+function S.Rollup(now)
+  local db = AHSnapshotDB
+  local ok, err = pcall(S.RollupOld, db, AHRoot(), now or S.Now(), db.detailDays, db.dailyDays, S.LocalDayOffset())
+  if not ok then db.lastError = { t = time(), err = "每日彙整失敗：" .. tostring(err) } end
+end
+
+-- 朋友資料裡的物品沒有名稱（分享檔只放物品 ID）：用 ID 向伺服器查，查到就記下來。
+-- 一次查一小批，避免一口氣送出上千個查詢。
+local pending, fetchTicker = {}, nil
+local function FetchMissingItems()
+  local db = AHSnapshotDB
+  local want = {}
+  for _, sh in pairs(db.shared or {}) do
+    for _, a in pairs(sh) do
+      for _, sc in ipairs(a.scans or {}) do
+        for key in pairs(sc.items or {}) do
+          local it = db.items[key]
+          if not (it and it.name) and tostring(key):match("^%d+$") then want[key] = true end
+        end
+      end
+    end
+  end
+  local queue = {}
+  for key in pairs(want) do queue[#queue + 1] = key end
+  if #queue == 0 or fetchTicker then return end
+  local i = 0
+  fetchTicker = C_Timer.NewTicker(0.2, function(self)
+    for _ = 1, 40 do
+      i = i + 1
+      local key = queue[i]
+      if not key then self:Cancel(); fetchTicker = nil; return end
+      local id = tonumber(key)
+      local ok, name = pcall(ItemInfo, id)
+      if ok and name then RememberItem(key, id, name) else pending[id] = key end
+    end
+  end)
+end
+
+local function OnItemInfo(itemID, success)
+  local key = itemID and pending[itemID]
+  if not key then return end
+  pending[itemID] = nil
+  if success == false then return end
+  local ok, name = pcall(ItemInfo, itemID)
+  if ok and name then
+    RememberItem(key, itemID, name)
+    if S.OnDataChanged and not S.itemRefreshQueued then
+      S.itemRefreshQueued = true
+      C_Timer.After(1, function() S.itemRefreshQueued = nil; S.OnDataChanged() end)
+    end
+  end
+end
+
 local function OnScanComplete(rawFullScan)
   local ok, err = xpcall(function()
     local ah, rk, zone = GetAH()
@@ -125,7 +179,7 @@ local function OnScanComplete(rawFullScan)
     if #listings == 0 then Print("列表是空的，這次不記錄。"); return end
     local now = S.Now()
     local scan = S.ProcessScan(ah, listings, now, zone, hasTL, AHSnapshotDB.items)
-    S.Prune(ah, now, AHSnapshotDB.keepDays)
+    S.Rollup(now)
 
     local msg = string.format("已記錄 %d 筆上架、%d 種物品（%s）。", scan.n, scan.nItems, rk)
     if scan.diff == 1 then
@@ -327,25 +381,25 @@ local function SlashHandler(msg)
         Print(string.format("%s：%d 次掃描，最新 %s", src, n, last and date("%m/%d %H:%M", last) or "-"))
       end
     end
-    Print(string.format("朋友資料保留 %d 天（/ahsnap sharekeep 天數）｜分享給朋友的是自己最近 %d 天（/ahsnap outdays 天數）",
-      AHSnapshotDB.shareKeepDays, AHSnapshotDB.outboxDays))
-  elseif cmd == "sharekeep" or cmd == "outdays" then
+    Print(string.format("分享給朋友、和朋友合併的是最近 %d 天的逐次掃描；更早的濃縮成每日紀錄（只存在自己電腦）。",
+      AHSnapshotDB.detailDays))
+  elseif cmd == "detail" then
     local d = tonumber(arg)
-    local field = cmd == "sharekeep" and "shareKeepDays" or "outboxDays"
-    if d and d >= 1 then
-      AHSnapshotDB[field] = math.floor(d)
-      if cmd == "sharekeep" then S.PruneShared(AHSnapshotDB, S.Now(), AHSnapshotDB.shareKeepDays) end
-      Print((cmd == "sharekeep" and "朋友資料保留 " or "分享給朋友的天數：") .. AHSnapshotDB[field] .. " 天。")
+    if d and d >= 1 and d <= 14 then
+      AHSnapshotDB.detailDays = math.floor(d)
+      Print("逐次掃描保留 " .. AHSnapshotDB.detailDays .. " 天（也是分享給朋友的天數），更早的濃縮成每日紀錄。")
+      S.Rollup()
     else
-      Print("用法：/ahsnap " .. cmd .. " 天數（目前 " .. AHSnapshotDB[field] .. " 天）")
+      Print("用法：/ahsnap detail 天數（1～14，目前 " .. AHSnapshotDB.detailDays .. " 天）。天數越多存檔越大；朋友的資料要在這段時間內送到才算得進去。")
     end
   elseif cmd == "keep" then
     local d = tonumber(arg)
     if d and d >= 1 then
-      AHSnapshotDB.keepDays = math.floor(d)
-      Print("掃描紀錄保留 " .. AHSnapshotDB.keepDays .. " 天。")
+      AHSnapshotDB.dailyDays = math.floor(d)
+      Print("每日紀錄保留 " .. AHSnapshotDB.dailyDays .. " 天。")
+      S.Rollup()
     else
-      Print("用法：/ahsnap keep 天數（目前 " .. AHSnapshotDB.keepDays .. " 天）")
+      Print("用法：/ahsnap keep 天數（目前每日紀錄保留 " .. AHSnapshotDB.dailyDays .. " 天）")
     end
   elseif cmd == "reset" then
     if arg == "confirm" then
@@ -357,13 +411,16 @@ local function SlashHandler(msg)
   else
     local scans = ah.scans or {}
     local last = scans[#scans]
-    Print(string.format("%s：已存 %d 次掃描，保留 %d 天。", rk, #scans, AHSnapshotDB.keepDays))
+    local nDays = 0
+    for _ in pairs(ah.daily or {}) do nDays = nDays + 1 end
+    Print(string.format("%s：逐次掃描 %d 次（保留 %d 天）、每日紀錄 %d 天（保留 %d 天）。",
+      rk, #scans, AHSnapshotDB.detailDays, nDays, AHSnapshotDB.dailyDays))
     if last then
       Print(string.format("上次掃描：%s，%d 筆上架。", date("%m/%d %H:%M", last.t), last.n))
     end
     Print(WaitText())
     Print("在拍賣場用 Auctionator 的「Scan」做全掃，本插件會自動記錄。")
-    Print("/ahsnap show 分析視窗｜top [天數] 賣出排行｜next 距下次掃描｜remind 分鐘 燈號間隔｜icon 顯示/隱藏燈號｜share 朋友資料｜keep 天數｜reset")
+    Print("/ahsnap show 分析視窗｜top [天數] 賣出排行｜next 距下次掃描｜remind 分鐘 燈號間隔｜icon 顯示/隱藏燈號｜share 朋友資料｜detail 天數 逐次掃描保留｜keep 天數 每日紀錄保留｜reset")
   end
 end
 
@@ -374,7 +431,7 @@ local function ImportInbox()
   local db = AHSnapshotDB
   local now = S.Now()
   if type(text) == "string" and text ~= "" then
-    local ok, added = pcall(S.ImportInbox, db, text, now, db.shareKeepDays)
+    local ok, added = pcall(S.ImportInbox, db, text, now, nil)
     if not ok then
       db.lastError = { t = time(), err = "匯入朋友資料失敗：" .. tostring(added) }
       Print("|cffff4444匯入朋友資料失敗：|r" .. tostring(added))
@@ -385,20 +442,22 @@ local function ImportInbox()
       if #parts > 0 then Print("已匯入朋友的掃描：" .. table.concat(parts, "、")) end
     end
   end
-  S.PruneShared(db, now, db.shareKeepDays)
 end
 
 -- 登出（含 /reload）時，把自己的掃描寫成文字，讓同步工具上傳
 local function ExportOutbox()
-  local ok, text = pcall(S.ExportOutbox, AHSnapshotDB, S.Now(), AHSnapshotDB.outboxDays)
+  local ok, text = pcall(S.ExportOutbox, AHSnapshotDB, S.Now(), AHSnapshotDB.detailDays)
   if ok then AHSnapshotOutbox = text
   else AHSnapshotDB.lastError = { t = time(), err = "匯出失敗：" .. tostring(text) } end
+  -- 物品資料改成一行字串再存（登入時展開），存檔小很多
+  pcall(S.PackItems, AHSnapshotDB.items)
 end
 
 local f = CreateFrame("Frame")
 f:RegisterEvent("PLAYER_LOGIN")
 f:RegisterEvent("PLAYER_LOGOUT")
-f:SetScript("OnEvent", function(_, event)
+f:SetScript("OnEvent", function(_, event, ...)
+  if event == "GET_ITEM_INFO_RECEIVED" then OnItemInfo(...); return end
   if event == "PLAYER_LOGOUT" then
     if AHSnapshotDB and AHSnapshotDB.realms then ExportOutbox() end
     return
@@ -411,16 +470,22 @@ f:SetScript("OnEvent", function(_, event)
   if S.MigrateToV3(db) then
     Print("舊版的賣出推估有誤（會把撤單、部分購買算成賣出），已清除；價格與架上量紀錄都保留。下次全掃後重新開始推估。")
   end
+  if S.MigrateToV4(db) then
+    Print("存檔格式更新：逐次掃描保留 3 天，更早的濃縮成每日紀錄（保留 30 天），存檔不會再一直變大。可用 /ahsnap detail、/ahsnap keep 調整。")
+  end
   db.version = S.DB_VERSION
   db.realms = db.realms or {}
   db.items = db.items or {}
   db.shared = db.shared or {}
-  db.keepDays = db.keepDays or 60
-  db.shareKeepDays = db.shareKeepDays or 30
-  db.outboxDays = db.outboxDays or 14
+  db.detailDays = db.detailDays or 3
+  db.dailyDays = db.dailyDays or 30
   db.fields = S.ROW_FIELDS
+  S.UnpackItems(db.items)
   MigrateOldKeys()
   ImportInbox()
+  S.Rollup()
+  f:RegisterEvent("GET_ITEM_INFO_RECEIVED")
+  C_Timer.After(5, FetchMissingItems)
 
   if not (Auctionator and Auctionator.EventBus and Auctionator.FullScan and Auctionator.FullScan.Events) then
     Print("|cffff4444找不到 Auctionator，無法運作。|r")

@@ -8,11 +8,11 @@ local S = AHSnapshot
 --   會出問題的字元（% ^ ~ " \ 與控制字元）一律寫成 %XX，所以整段字串不需要任何 Lua 跳脫，
 --   外部工具也只要找雙引號就能把它從存檔裡切出來。
 --   V^格式版本^來源名字^匯出時間          一段資料的開頭（來源名字由同步工具填）
---   I^物品鍵^名稱^品質^收購價^分類^子分類^堆疊   物品資料
+--   I^物品鍵^名稱^品質^收購價^分類^子分類^堆疊   物品資料（只有帶後綴的鍵才寫：一般物品朋友的遊戲用 ID 自己查）
 --   S^拍賣場鍵^t^gap^diff^tl^n^zone^列格式^推估版本  一次掃描的標頭，後面跟著它的 R
 --                                     （推估版本 < 2 或沒有：只收價格與架上量，推估歸零）
---   R^物品鍵^逗號分隔的數字                 一個物品在這次掃描的價量（欄位見 S.ROW_FIELDS，只會往後加）
---   D^...                                   保留給每日彙整（尚未使用）
+--   R^物品鍵^逗號分隔的數字                 一個物品在這次掃描的價量（欄位見 S.ROW_FIELDS，只會往後加；尾端的 0 省略）
+--   D^...                                   保留（每日彙整只存在自己電腦，不分享，見 DESIGN.md）
 --   不認得的紀錄類型直接略過，舊版插件讀到新格式不會壞。
 S.SHARE_FORMAT = 1
 S.ROW_SCHEMA = 1           -- R 列欄位版本：1＝S.ROW_FIELDS（11 欄，只往後加）
@@ -35,7 +35,8 @@ local function Split(rec)
 end
 S.SplitRecord = Split
 
--- 把自己的掃描（最近 days 天）匯出成字串
+-- 把自己的掃描（最近 days 天）匯出成字串。
+-- 物品名稱：一般物品（鍵就是物品 ID）不寫，朋友的遊戲用 ID 向伺服器查；帶隨機後綴的鍵才寫 I 紀錄。
 function S.ExportOutbox(db, now, days)
   local since = now - days * 86400
   local out = { table.concat({ "V", S.SHARE_FORMAT, "", now }, FS) }
@@ -49,8 +50,8 @@ function S.ExportOutbox(db, now, days)
         body[#body + 1] = table.concat({ "S", S.Enc(rk), sc.t, sc.gap or "", okEst and (sc.diff or 0) or 0, sc.tl or 0,
           sc.n or 0, S.Enc(sc.zone), S.ROW_SCHEMA, okEst and S.EST_VERSION or 1 }, FS)
         for key, row in pairs(sc.items or {}) do
-          body[#body + 1] = "R" .. FS .. S.Enc(key) .. FS .. (okEst and row or S.ZeroEstimates(row))
-          usedKeys[key] = true
+          body[#body + 1] = "R" .. FS .. S.Enc(key) .. FS .. (okEst and S.TrimRow(row) or S.ZeroEstimates(row))
+          if not tostring(key):match("^%-?%d+$") then usedKeys[key] = true end
         end
       end
     end
@@ -69,6 +70,7 @@ end
 local function num(v) return tonumber(v) end
 
 -- 匯入 inbox（可能是好幾個人的資料接在一起，每段以 V 開頭）
+-- 已經濃縮成每日紀錄的時段（db.realms[鍵].rolledBefore 以前）的掃描直接丟掉，不重算。
 -- 回傳 { [來源] = 新增的掃描數 }, 新增物品資料數
 function S.ImportInbox(db, text, now, keepDays)
   db.shared = db.shared or {}
@@ -96,7 +98,8 @@ function S.ImportInbox(db, text, now, keepDays)
       elseif kind == "S" and source then
         local rk, t = S.Dec(f[2] or ""), num(f[3])
         cur, skip = nil, true
-        if rk ~= "" and t and (not since or t >= since) then
+        local rolled = db.realms and db.realms[rk] and db.realms[rk].rolledBefore
+        if rk ~= "" and t and (not since or t >= since) and (not rolled or t >= rolled) then
           db.shared[source] = db.shared[source] or {}
           local sh = db.shared[source]
           sh[rk] = sh[rk] or { scans = {}, seen = {} }
@@ -118,7 +121,7 @@ function S.ImportInbox(db, text, now, keepDays)
         local key = S.Dec(f[2] or "")
         local row = f[3]
         if key ~= "" and row and row:match("^[%d,%-%.]+$") then
-          cur.items[key] = cur.clearEst and S.ZeroEstimates(row) or row
+          cur.items[key] = cur.clearEst and S.ZeroEstimates(row) or S.TrimRow(row)
           cur.nItems = cur.nItems + 1
         end
       end
@@ -153,9 +156,11 @@ function S.PruneShared(db, now, keepDays)
   return removed
 end
 
--- 分析用的掃描來源：自己的＋（可選）朋友的。回傳 { {source=名字或 nil, scans=...}, ... }
+-- 分析用的掃描來源：自己的＋（可選）朋友的。回傳 { {source=名字或 nil, scans=...}, ..., daily = 每日紀錄 }
+-- 每日紀錄是「自己＋朋友」合併後濃縮的，不分來源，所以不管 includeShared 都會帶上。
 function S.CollectSources(db, rk, includeShared)
-  local list = { { source = nil, scans = (db.realms[rk] or {}).scans or {} } }
+  local own = db.realms[rk] or {}
+  local list = { { source = nil, scans = own.scans or {} }, daily = own.daily }
   if includeShared then
     local names = {}
     for src in pairs(db.shared or {}) do names[#names + 1] = src end

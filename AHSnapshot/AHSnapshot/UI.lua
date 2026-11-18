@@ -32,7 +32,7 @@ local TIPS = {
 
 local state = { days = 7, sort = "valuePerDay", asc = false, text = "", onlySold = true, offset = 0, includeShared = true }
 local frame, detail
-local data, view, covered, nDiff, nSources = {}, {}, 0, 0, 1
+local data, view, covered, nDiff, nSources, nDays = {}, {}, 0, 0, 1, 0
 
 local function Bg(f, r, g, b, a)
   local t = f:CreateTexture(nil, "BACKGROUND")
@@ -68,13 +68,13 @@ local function ItemIDOf(key) return tonumber((tostring(key):match("^(%-?%d+)")))
 local Refresh, ShowDetail
 
 local function Recompute()
-  data, covered, nDiff, nSources = S.Analyze(S.GetSources(state.includeShared), S.Now(), state.days, AHSnapshotDB.items)
+  data, covered, nDiff, nSources, nDays = S.Analyze(S.GetSources(state.includeShared), S.Now(), state.days, AHSnapshotDB.items)
   Refresh()
 end
 
 Refresh = function()
   if not frame then return end
-  view = S.FilterList(data, state.text, state.onlySold and nDiff > 0)  -- 還沒比對過就先顯示全部
+  view = S.FilterList(data, state.text, state.onlySold and (nDiff > 0 or nDays > 0))  -- 還沒比對過就先顯示全部
   S.SortList(view, state.sort, state.asc)
   local maxOff = math.max(0, #view - ROWS)
   if state.offset > maxOff then state.offset = maxOff end
@@ -112,9 +112,10 @@ Refresh = function()
   local hours = covered / 3600
   local first = #view > 0 and (state.offset + 1) or 0
   frame.footer:SetText(string.format(
-    "有效觀察 %.1f 小時（%d 次比對，%d 個來源）｜第 %d–%d 項，共 %d 項｜滾輪捲動，點一列看明細",
-    hours, nDiff, nSources, first, math.min(state.offset + ROWS, #view), #view))
-  if nDiff == 0 then
+    "有效觀察 %.1f 小時（%d 次比對，%d 個來源%s）｜第 %d–%d 項，共 %d 項｜滾輪捲動，點一列看明細",
+    hours, nDiff, nSources, nDays > 0 and string.format("＋%d 天每日紀錄", nDays) or "",
+    first, math.min(state.offset + ROWS, #view), #view))
+  if nDiff == 0 and nDays == 0 then
     frame.footer:SetText("還沒有可比對的掃描：同一個拍賣場隔 30 分～2 小時再全掃一次，就會有賣出資料。")
   end
   frame.note:SetText(string.format(
@@ -208,8 +209,10 @@ ShowDetail = function(r)
   local cols = {}
   for i, fs in ipairs(detail.cols) do cols[i] = { "|cffffd100" .. fs.head .. "|r" } end
   for _, h in ipairs(hist) do
-    local v = { date("%m/%d %H:%M", h.t), tostring(h.qty), Fmt(h.min, "money"), Fmt(h.med, "money"),
-                h.diff == 1 and tostring(h.sold) or "-", h.source or "自己" }
+    -- 每日紀錄：架上＝當天最多、最低價＝當天最低、中位價＝當天平均，來源是合併後的
+    local v = { h.daily and (date("%m/%d", h.t) .. " 全天") or date("%m/%d %H:%M", h.t), tostring(h.qty),
+                Fmt(h.min, "money"), Fmt(h.med, "money"),
+                h.diff == 1 and tostring(h.sold) or "-", h.daily and "每日合併" or (h.source or "自己") }
     for i = 1, #cols do cols[i][#cols[i] + 1] = v[i] end
   end
   for i, fs in ipairs(detail.cols) do fs:SetText(table.concat(cols[i], "\n")) end
@@ -278,6 +281,14 @@ local function CreateWindow()
     state.offset = 0
     Recompute()
   end)
+  sharedToggle:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
+    GameTooltip:AddLine("包含朋友資料", 1, 0.82, 0)
+    GameTooltip:AddLine(string.format("只影響最近 %d 天的逐次掃描。更早的每日紀錄是自己和朋友合併後濃縮的，一律包含。",
+      AHSnapshotDB.detailDays or 3), 1, 1, 1, true)
+    GameTooltip:Show()
+  end)
+  sharedToggle:SetScript("OnLeave", function() GameTooltip:Hide() end)
   frame.sharedToggle = sharedToggle
 
   -- 欄位標題（點了排序）

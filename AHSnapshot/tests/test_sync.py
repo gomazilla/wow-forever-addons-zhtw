@@ -92,8 +92,9 @@ try:
     L.execute(r'''
       NOW = os.time()
       local function l(key, count, buyout, owner, tl) return {key=key, count=count, buyout=buyout, minBid=1, owner=owner, tl=tl} end
-      dbA = { realms = { PvE = {} }, items = { ["2589"] = { name = "亞麻布", q = 1, sell = 10 }, ["99"] = { name = '奇"怪\\名' } } }
-      AHSnapshot.ProcessScan(dbA.realms.PvE, { l("2589",20,2000,"甲",4), l("99",1,500,"乙",4) }, NOW - 3600, "貿易區", true)
+      -- 一般物品的名稱不分享（朋友用 ID 查），帶後綴的才分享：用後綴鍵測特殊字元
+      dbA = { realms = { PvE = {} }, items = { ["2589"] = { name = "亞麻布", q = 1, sell = 10 }, ["99:-5"] = { name = '奇"怪\\名' } } }
+      AHSnapshot.ProcessScan(dbA.realms.PvE, { l("2589",20,2000,"甲",4), l("99:-5",1,500,"乙",4) }, NOW - 3600, "貿易區", true)
       AHSnapshot.ProcessScan(dbA.realms.PvE, { l("2589",20,2000,"甲",4) }, NOW - 1800, "貿易區", true)
       svA = WriteSV(dbA, AHSnapshot.ExportOutbox(dbA, NOW, 14), nil)
       dbB = { realms = { PvE = {} }, items = { ["2592"] = { name = "毛料" } } }
@@ -145,7 +146,7 @@ try:
       bad = AHSnapshotDB.shared["壞人"]
       badRows = 0
       if bad then for _, sc in ipairs(bad.PvE.scans) do for _ in pairs(sc.items) do badRows = badRows + 1 end end end
-      weird = AHSnapshotDB.items["99"] and AHSnapshotDB.items["99"].name
+      weird = AHSnapshotDB.items["99:-5"] and AHSnapshotDB.items["99:-5"].name
     ''')
     GB = LB.globals()
     check('B 的存檔仍是合法 Lua，自己的資料還在', GB.own_before, 1)

@@ -2,7 +2,7 @@
 AHSnapshot = AHSnapshot or {}
 local S = AHSnapshot
 
-S.DB_VERSION = 3   -- 2：加 shared（朋友資料）；3：賣出推估改成依單價分層，清掉舊推估
+S.DB_VERSION = 4   -- 2：加 shared（朋友資料）；3：賣出推估改成依單價分層，清掉舊推估；4：列去尾端 0、物品資料精簡、每日彙整
 S.EST_VERSION = 2  -- 賣出推估演算法版本：1＝逐筆指紋（有誤，已停用），2＝依單價分層
 S.ESTIMATE_ROW_FROM = 6  -- 列欄位第 6 欄起（sold 以後）是推估值；前 5 欄（量與價格）一直是正確的
 
@@ -257,12 +257,27 @@ end
 -- 1.1 起在最後加 soldValue；舊紀錄只有前 10 欄，讀的時候缺的當 0
 S.ROW_FIELDS = { "qty", "listings", "min", "p25", "med", "sold", "soldN", "expired", "repost", "new", "soldValue" }
 
+-- 尾端的 0 不寫（讀的時候缺的欄位當 0）：大部分物品沒有賣出，可省約 1/4 空間。至少留第 1 欄。
+local function TrimZeros(v)
+  local n = #v
+  while n > 1 and (v[n] == 0 or v[n] == "0") do v[n] = nil; n = n - 1 end
+  return table.concat(v, ",")
+end
+S.TrimZeros = TrimZeros
+
+function S.TrimRow(row)
+  local v = {}
+  for x in (row or ""):gmatch("[^,]+") do v[#v + 1] = x end
+  if #v == 0 then return "0" end
+  return TrimZeros(v)
+end
+
 function S.PackRow(a, d)
   local v = {}
   for i, f in ipairs(S.ROW_FIELDS) do
     v[i] = a[f] or (d and d[f]) or 0
   end
-  return table.concat(v, ",")
+  return TrimZeros(v)
 end
 
 -- 處理一次完整掃描。
@@ -368,8 +383,8 @@ function S.ZeroEstimates(row)
     i = i + 1
     v[i] = i < S.ESTIMATE_ROW_FROM and x or "0"
   end
-  for j = i + 1, #S.ROW_FIELDS do v[j] = "0" end
-  return table.concat(v, ",")
+  if i == 0 then return "0" end
+  return TrimZeros(v)
 end
 
 -- 一次掃描的推估不能用（舊演算法）：推估歸零、標成不比對
@@ -397,6 +412,45 @@ function S.MigrateToV3(db)
   end
   db.version = 3
   return true
+end
+
+-- 資料升級到第 4 版：所有列去掉尾端的 0；舊的保留天數設定（keepDays＝逐次掃描 60 天）作廢，
+-- 改成「逐次掃描 detailDays 天＋每日彙整 dailyDays 天」。回傳 true＝這次有做升級
+function S.MigrateToV4(db)
+  if (db.version or 1) >= 4 then return false end
+  local function trim(ah)
+    for _, sc in ipairs(ah.scans or {}) do
+      for key, row in pairs(sc.items or {}) do sc.items[key] = S.TrimRow(row) end
+    end
+  end
+  for _, ah in pairs(db.realms or {}) do trim(ah) end
+  for _, sh in pairs(db.shared or {}) do
+    for _, ah in pairs(sh) do trim(ah) end
+  end
+  db.keepDays, db.shareKeepDays, db.outboxDays = nil, nil, nil
+  db.version = 4
+  return true
+end
+
+-- ---- 物品資料精簡存放 ----
+-- 存檔裡每樣物品一行字串「名稱^品質^收購價^分類^子分類^堆疊」（名稱經 S.Enc 轉義，見 Share.lua），
+-- 遊戲中展開成表格使用。登入時 UnpackItems，登出時 PackItems。兩種格式混在一起也讀得懂。
+function S.UnpackItems(items)
+  for key, v in pairs(items or {}) do
+    if type(v) == "string" then
+      local f = S.SplitRecord(v)
+      items[key] = { name = f[1] ~= "" and S.Dec(f[1]) or nil, q = tonumber(f[2]), sell = tonumber(f[3]),
+                     cls = tonumber(f[4]), sub = tonumber(f[5]), stack = tonumber(f[6]) }
+    end
+  end
+end
+
+function S.PackItems(items)
+  for key, v in pairs(items or {}) do
+    if type(v) == "table" then
+      items[key] = table.concat({ S.Enc(v.name or ""), v.q or "", v.sell or "", v.cls or "", v.sub or "", v.stack or "" }, "^")
+    end
+  end
 end
 
 function S.ParseRow(row)
@@ -442,13 +496,25 @@ function S.PickIntervals(sources, since, maxGap)
 end
 
 -- 把「一個拍賣場的資料」或「來源清單」統一成來源清單 { {source=, scans=}, ... }
+-- 每日紀錄（S.RollupOld 產生）跟著帶在 .daily
 local function AsSources(x)
-  if x and x.scans then return { { source = nil, scans = x.scans } } end
+  if x and x.scans then return { { source = nil, scans = x.scans }, daily = x.daily } end
   return x or {}
 end
 
+-- 分析範圍內的每日紀錄（舊到新）：那天有一半以上落在範圍內才算
+local function DailyInRange(daily, since)
+  local list = {}
+  for _, day in pairs(daily or {}) do
+    if day.t0 and day.t0 + 43200 >= since then list[#list + 1] = day end
+  end
+  table.sort(list, function(a, b) return a.t0 < b.t0 end)
+  return list
+end
+
 -- srcs：S.CollectSources 的結果（自己＋朋友），或單一拍賣場資料 { scans = ... }
--- 回傳 (清單, 觀察秒數, 比對次數, 用到的來源數)
+-- 回傳 (清單, 觀察秒數, 比對次數, 用到的來源數, 用到的每日紀錄天數)
+-- 每日紀錄（較舊的日子）只拿賣出相關的加總和中位價；架上量與最低價看最新一次逐次掃描。
 function S.Analyze(srcs, now, days, items)
   items = items or {}
   srcs = AsSources(srcs)
@@ -465,6 +531,37 @@ function S.Analyze(srcs, now, days, items)
   table.sort(scans, function(a, b) return a.t < b.t end)
   local latest = scans[#scans]   -- 所有來源中最新的一次
   local res, covered, nDiff = {}, 0, 0
+  local function Row(key)
+    local r = res[key]
+    if not r then
+      r = { key = key, sold = 0, soldN = 0, soldValue = 0, soldValueQty = 0, soldValueN = 0,
+            expired = 0, repost = 0, new = 0 }
+      res[key] = r
+    end
+    return r
+  end
+
+  -- 先加每日紀錄（比逐次掃描舊），中位價的「最早」才會取到最舊的
+  local dailies = DailyInRange(srcs.daily, since)
+  for _, day in ipairs(dailies) do
+    covered = covered + (day.o or 0)
+    for key, row in pairs(day.items or {}) do
+      local f = S.ParseDaily(row)
+      local r = Row(key)
+      r.sold = r.sold + f.sold
+      r.soldN = r.soldN + f.soldN
+      r.expired = r.expired + f.expired
+      r.repost = r.repost + f.repost
+      r.new = r.new + f.new
+      r.soldValue = r.soldValue + f.soldValue
+      r.soldValueQty = r.soldValueQty + f.soldValueQty
+      r.soldValueN = r.soldValueN + f.soldValueN
+      if f.medAvg > 0 then
+        r.firstMed = r.firstMed or f.medAvg
+        r.lastMed = f.medAvg
+      end
+    end
+  end
 
   for _, sc in ipairs(scans) do
     do
@@ -472,12 +569,7 @@ function S.Analyze(srcs, now, days, items)
       if useDiff then covered = covered + sc.gap; nDiff = nDiff + 1 end
       for key, row in pairs(sc.items or {}) do
         local f = S.ParseRow(row)
-        local r = res[key]
-        if not r then
-          r = { key = key, sold = 0, soldN = 0, soldValue = 0, soldValueQty = 0, soldValueN = 0,
-                expired = 0, repost = 0, new = 0 }
-          res[key] = r
-        end
+        local r = Row(key)
         if useDiff then
           r.sold = r.sold + f.sold
           r.soldN = r.soldN + f.soldN        -- 成交筆數：一整疊被買走只算 1 次
@@ -524,7 +616,7 @@ function S.Analyze(srcs, now, days, items)
     r.quality = info.q
     list[#list + 1] = r
   end
-  return list, covered, nDiff, nSources
+  return list, covered, nDiff, nSources, #dailies
 end
 
 -- 依欄位排序（文字欄位依名稱，數字欄位預設大到小）
@@ -576,16 +668,32 @@ function S.History(srcs, key, limit)
     f.source = all[i].source
     out[#out + 1] = f
   end
+  -- 接著是較舊的每日紀錄（新到舊）：daily=true，qty＝當天最大架上量、min＝當天最低價、med＝當天中位價平均
+  local dailies = DailyInRange(srcs.daily, -math.huge)
+  for i = #dailies, 1, -1 do
+    if #out >= limit then break end
+    local row = dailies[i].items and dailies[i].items[key]
+    if row then
+      local d = S.ParseDaily(row)
+      out[#out + 1] = { t = dailies[i].t0, daily = true, diff = (dailies[i].o or 0) > 0 and 1 or 0,
+                        qty = d.maxQty, min = d.min, med = d.medAvg, sold = d.sold }
+    end
+  end
   return out
 end
 
--- ---- 每日彙整（先不自動啟用，見 DESIGN.md）----
--- 把多次掃描彙整成「每天每物品一列」。dayOffset：時區秒數（台灣 +8 小時＝28800），決定一天從幾點算起。
--- 只有被選中的比對區間（不重疊、≤ MAX_DIFF_GAP）才累計賣出；區間依結束時間歸到那一天。
+-- ---- 每日彙整（見 DESIGN.md「每日彙整」）----
+-- 先合併、再濃縮：把自己＋朋友的逐次掃描放在一起，用 S.PickIntervals 扣掉重疊的比對區間，
+-- 再把同一天的掃描濃縮成「每天每物品一列」。每日紀錄只存在自己電腦，不分享，也不和別人的每日紀錄相加。
+-- dayOffset：時區秒數（台灣 +8 小時＝28800），決定一天從幾點算起。天編號 = floor((t + dayOffset) / 86400)
+-- 比對區間依結束時間歸到那一天。
 -- 回傳 days[天編號] = { observed = 觀察秒數, scans = 掃描數, items = { [物品鍵] = {
---   min = 當天最低價, medAvg = 中位價平均, maxQty = 最大架上量, sold, soldValue, soldValueQty, expired, n = 出現次數 } } }
--- 天編號 = floor((t + dayOffset) / 86400)
+--   n = 出現次數, maxQty, min, medAvg, sold, soldN, soldValue, soldValueQty, soldValueN, expired, repost, new } } }
 S.DAILY_SCHEMA = 1
+-- 每日列的欄位順序（存檔裡逗號分隔，尾端的 0 不寫）
+S.DAILY_FIELDS = { "n", "maxQty", "min", "medAvg", "sold", "soldN", "soldValue", "soldValueQty", "soldValueN",
+                   "expired", "repost", "new" }
+
 function S.RollupDaily(srcs, dayOffset)
   dayOffset = dayOffset or 0
   srcs = AsSources(srcs)
@@ -603,7 +711,8 @@ function S.RollupDaily(srcs, dayOffset)
         local f = S.ParseRow(row)
         local it = day.items[key]
         if not it then
-          it = { min = 0, medSum = 0, medN = 0, maxQty = 0, sold = 0, soldValue = 0, soldValueQty = 0, expired = 0, n = 0 }
+          it = { min = 0, medSum = 0, medN = 0, maxQty = 0, sold = 0, soldN = 0, soldValue = 0, soldValueQty = 0,
+                 soldValueN = 0, expired = 0, repost = 0, new = 0, n = 0 }
           day.items[key] = it
         end
         it.n = it.n + 1
@@ -612,10 +721,14 @@ function S.RollupDaily(srcs, dayOffset)
         if f.qty > it.maxQty then it.maxQty = f.qty end
         if use then
           it.sold = it.sold + f.sold
+          it.soldN = it.soldN + f.soldN
           it.expired = it.expired + f.expired
+          it.repost = it.repost + f.repost
+          it.new = it.new + f.new
           if f.soldValue > 0 then
             it.soldValue = it.soldValue + f.soldValue
             it.soldValueQty = it.soldValueQty + f.sold
+            it.soldValueN = it.soldValueN + f.soldN
           end
         end
       end
@@ -628,4 +741,96 @@ function S.RollupDaily(srcs, dayOffset)
     end
   end
   return days
+end
+
+function S.PackDaily(it)
+  local v = {}
+  for i, f in ipairs(S.DAILY_FIELDS) do v[i] = math.floor((it[f] or 0) + 0.5) end
+  return TrimZeros(v)
+end
+
+function S.ParseDaily(row)
+  local f, i = {}, 0
+  for v in (row or ""):gmatch("[^,]+") do
+    i = i + 1
+    local name = S.DAILY_FIELDS[i]
+    if name then f[name] = tonumber(v) or 0 end
+  end
+  for _, name in ipairs(S.DAILY_FIELDS) do f[name] = f[name] or 0 end
+  return f
+end
+
+-- 時區秒數：本機時間比 UTC 快幾秒（遊戲裡呼叫，離線測試直接給數字）
+function S.LocalDayOffset()
+  local now = time()
+  return now - time(date("!*t", now))
+end
+
+-- 某時間點所在那天的天編號
+function S.DayOf(t, dayOffset) return math.floor((t + (dayOffset or 0)) / 86400) end
+
+-- 把超過 detailDays 天的逐次掃描（自己＋朋友，同一個拍賣場）濃縮成每日紀錄，然後刪掉那些逐次掃描；
+-- 每日紀錄超過 dailyDays 天的刪掉。
+-- 只濃縮「整天都已經超過保留期」的日子（今天往前 detailDays 天之前的日子）。
+-- ah.rolledBefore：這個時間以前的資料已經濃縮過；之後才送到的朋友掃描若落在這之前，匯入時直接丟掉（避免重算）。
+-- 回傳 (新增幾天, 刪掉幾次掃描)
+function S.RollupOld(db, rk, now, detailDays, dailyDays, dayOffset)
+  db.realms[rk] = db.realms[rk] or { scans = {} }
+  local ah = db.realms[rk]
+  ah.daily = ah.daily or {}
+  local today = S.DayOf(now, dayOffset)
+  local cutDay = today - detailDays - 1             -- 今天以外再留滿 detailDays 整天，更早的濃縮
+  local boundary = (cutDay + 1) * 86400 - dayOffset -- 這個時間以前的掃描要濃縮
+  local done = ah.rolledBefore or -math.huge
+
+  local srcs, removed = {}, 0
+  local function take(scans)
+    local old, keep = {}, {}
+    for _, sc in ipairs(scans or {}) do
+      if sc.t < boundary then
+        if sc.t >= done then old[#old + 1] = sc end
+        removed = removed + 1
+      else
+        keep[#keep + 1] = sc
+      end
+    end
+    if #old > 0 then srcs[#srcs + 1] = { scans = old } end
+    return keep
+  end
+  ah.scans = take(ah.scans)
+  for _, sh in pairs(db.shared or {}) do
+    local a = sh[rk]
+    if a then
+      a.scans = take(a.scans)
+      local seen = {}
+      for _, sc in ipairs(a.scans) do seen[sc.t] = true end
+      a.seen = seen
+    end
+  end
+
+  local added = 0
+  if #srcs > 0 then
+    for d, day in pairs(S.RollupDaily(srcs, dayOffset)) do
+      if not ah.daily[d] then
+        local items = {}
+        for key, it in pairs(day.items) do items[key] = S.PackDaily(it) end
+        ah.daily[d] = { t0 = d * 86400 - dayOffset, o = day.observed, s = day.scans, items = items }
+        added = added + 1
+      end
+    end
+  end
+  if boundary > done then ah.rolledBefore = boundary end
+
+  for d in pairs(ah.daily) do
+    if d <= today - dailyDays then ah.daily[d] = nil end
+  end
+  -- 朋友來源整個沒資料了就移除
+  for src, sh in pairs(db.shared or {}) do
+    local any = false
+    for k, a in pairs(sh) do
+      if #(a.scans or {}) == 0 then sh[k] = nil else any = true end
+    end
+    if not any then db.shared[src] = nil end
+  end
+  return added, removed
 end

@@ -91,7 +91,7 @@ L.execute(r'''
   s1 = AHSnapshot.ProcessScan(ahOld, { l("1", 180, 10) }, 1900, "z", true, { ["1"] = { stack = 200 } })
   s2 = AHSnapshot.ProcessScan(ahOld, { l("1", 150, 10) }, 2800, "z", true, { ["1"] = { stack = 200 } })
 ''')
-check('舊快照：不比對', (G.s1.diff, G.s1['items']['1']), (0, '180,1,10,10,10,0,0,0,0,0,0'))
+check('舊快照：不比對', (G.s1.diff, G.s1['items']['1']), (0, '180,1,10,10,10'))
 check('之後用新演算法比對', (G.s2.diff, G.s2['items']['1']), (1, '150,1,10,10,10,30,1,0,0,0,300'))
 
 # ---- 資料升級到第 3 版 ----
@@ -109,12 +109,12 @@ L.execute(r'''
   pv = dbv.realms.PvE
 ''')
 check('升級只做一次', (G.mig1, G.mig2, G.dbv.version), (True, False, 3))
-check('推估歸零、價格保留', G.pv.scans[2]['items']['1'], '8,1,6,6,7,0,0,0,0,0,0')
-check('舊 10 欄列補滿 11 欄', G.pv.scans[2]['items']['2'], '1,1,9,9,9,0,0,0,0,0,0')
+check('推估歸零、價格保留', G.pv.scans[2]['items']['1'], '8,1,6,6,7')
+check('舊 10 欄列補滿 11 欄', G.pv.scans[2]['items']['2'], '1,1,9,9,9')
 check('標成不比對', (G.pv.scans[1].diff, G.pv.scans[2].diff), (0, 0))
 check('舊快照丟掉', (G.pv.prev, G.pv.prevTime), (None, None))
 check('朋友的舊推估清掉、新推估保留', (G.dbv.shared['阿明'].PvE.scans[1]['items']['1'], G.dbv.shared['阿明'].PvE.scans[2]['items']['1']),
-      ('1,1,1,1,1,0,0,0,0,0,0', '1,1,1,1,1,2,1,0,0,0,20'))
+      ('1,1,1,1,1', '1,1,1,1,1,2,1,0,0,0,20'))
 
 # ---- 可信度：稀有高價品不誇大、不搶第一 ----
 L.execute(r'''
