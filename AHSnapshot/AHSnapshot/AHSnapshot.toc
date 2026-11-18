@@ -1,0 +1,12 @@
+## Interface: 16001
+## Title: AH Snapshot
+## Notes: Auctionator 全掃後另存快照，推估賣出量；可和朋友共享資料
+## Author: local
+## Version: 1.2.0
+## RequiredDeps: Auctionator
+## SavedVariables: AHSnapshotDB, AHSnapshotOutbox, AHSnapshotInbox
+
+Core.lua
+Share.lua
+Main.lua
+UI.lua

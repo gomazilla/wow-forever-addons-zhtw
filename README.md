@@ -1,10 +1,19 @@
 # WoW Forever 插件繁體中文化
 
-給朋友用的 WoW Forever（台服 zhTW 用戶端）插件繁中版。
+給朋友用的 WoW Forever（台服 zhTW 用戶端）插件繁中版，和幾個自己寫的小插件。
 
 | 插件 | 版本 | 下載 |
 |---|---|---|
-| Journey Together Forever | v2.0.0 | [下載 zip](../../releases/tag/JourneyTogetherForever-v2.0.0-zhtw) |
+| Journey Together Forever（繁中化） | v2.0.0 | [下載 zip](../../releases/tag/JourneyTogetherForever-v2.0.0-zhtw) |
+| AH Snapshot（自製） | v1.2.0 | [下載 zip](../../releases/tag/AHSnapshot-v1.2.0) |
+
+## 自製插件
+
+- **AH Snapshot**：用 Auctionator 全掃拍賣場時記下價格和架上數量，推估賣出量，在遊戲裡用表格看哪些東西好賣。
+  附 AHSync 小工具，可以和朋友透過 Google 雲端共用資料夾一起蒐集。需要先裝 Auctionator。
+  安裝和用法見 [AHSnapshot/README.md](AHSnapshot/README.md)。
+
+以下「安裝」「注意」是繁中化插件的說明。
 
 ## 安裝
 
