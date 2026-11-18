@@ -4,7 +4,7 @@
 
 | 插件 | 版本 | 下載 |
 |---|---|---|
-| Journey Together Forever | v1.10.0 | [下載 zip](../../releases/tag/JourneyTogetherForever-v1.10.0-zhtw) |
+| Journey Together Forever | v2.0.0 | [下載 zip](../../releases/tag/JourneyTogetherForever-v2.0.0-zhtw) |
 
 ## 安裝
 
@@ -28,6 +28,7 @@ repo 裡的 `JourneyTogetherForever/` 只放改過的檔案，方便看差異；
 
 ## 更新紀錄
 
+- v2.0.0：跟上原作者 v2.0.0（新增獨自冒險等新功能的翻譯），並修正幾句被舊譯文蓋掉的說明。
 - v1.10.0：跟上原作者 v1.10.0。
 - v1.9.0：跟上原作者 v1.9.0。
 - v1.8.0：第一版公開。

@@ -220,7 +220,7 @@ function ns.TimeLeft(sec)
 end
 
 ---------------------------------------------------------------------------
--- Addon versions: "v1.2.3" or "1.2.3-beta" -> { 1, 2, 3 }; nil for a development copy ("v1.10.0").
+-- Addon versions: "v1.2.3" or "1.2.3-beta" -> { 1, 2, 3 }; nil for a development copy ("v2.0.0").
 ---------------------------------------------------------------------------
 function ns.ParseVersion(v)
   if type(v) ~= "string" then return nil end

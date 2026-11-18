@@ -2,7 +2,7 @@
 ## Title: |cffe2b857Journey Together|r Forever
 ## Notes: Level together with your fellowship, chapter by chapter.
 ## Author: Vaderstrom
-## Version: v1.10.0
+## Version: v2.0.0
 ## SavedVariables: JourneyTogetherForeverDB
 ## OptionalDeps: Questie
 ## SavedVariablesPerCharacter: JourneyTogetherForeverCharDB
