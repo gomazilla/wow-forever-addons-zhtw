@@ -83,6 +83,9 @@ MOCKS = r'''
   GetRealZoneText = nil  -- 缺函式也不能讓記錄失敗
   UnitFactionGroup = function() return "Alliance" end
   GetRealmName = function() return "測試伺服器" end
+  -- Forever：伺服器名稱區域唯一，拍賣場依規則名分（"PvE"）＋陣營
+  RegionalUniqueNamesEnabled = function() return true end
+  GetRegionalRulesetName = function() return "PvE" end
   clock = 1000000
   time = function() return clock end
   date = os.date
@@ -235,32 +238,132 @@ check('全程沒有錯誤', any('失敗' in m for m in msgs), False)
 for m in msgs:
     print('   >', m)
 
-# ---- 跨角色：拍賣場鍵跟 Auctionator 一致，舊資料搬家 ----
+# ---- 拍賣場分聯盟／部落／中立：鍵自己算，舊資料依掃描地點搬家 ----
 L3 = new_lua()
 L3.execute(MOCKS)
 L3.execute('''
+  -- Auctionator 新式拍賣場給沒有陣營的 "PvE"：不再採用
   Auctionator.Variables = { GetConnectedRealmRoot = function() return "PvE" end }
-  AHSnapshotDB = { version = 3, realms = { ["CAMWOW TW4 Realm 1 PvE|Alliance"] = { scans = { { t = clock - 600, n = 1, items = {} } },
-    prev = { ["2589"] = "2|s|100:20:0,0,0,20" }, prevVersion = 2, prevTime = clock - 600 } }, items = {} }
+  AHSnapshotDB = { version = 4, items = {}, realms = {
+    -- 1.3.0：聯盟角色在貿易區掃的、最後一次在藏寶海灣
+    PvE = { scans = { { t = clock - 1800, n = 1, zone = "貿易區", items = {} },
+                      { t = clock - 1200, n = 1, zone = "貿易區", items = {} },
+                      { t = clock - 600, n = 1, zone = "藏寶海灣", items = {} } },
+            prev = { ["2589"] = "2|s|100:20:0,0,0,20" }, prevVersion = 2, prevTime = clock - 600,
+            daily = { [11] = { t0 = 1, items = {} } }, rolledBefore = 5 },
+    -- 1.0：伺服器|陣營（伺服器名跟現在的規則名不同）
+    ["CAMWOW TW4 Realm 1 PvE|Horde"] = { scans = { { t = clock - 900, n = 1, items = {} } } },
+    -- 認不出地點的留在原鍵
+    ["Other"] = { scans = { { t = clock - 900, n = 1, zone = "某個小鎮", items = {} } } },
+  },
+  shared = { ["小美"] = {
+    -- 朋友舊版：LegacyAH 鍵，藏寶海灣那筆要改成中立；跟 1.3.1 送來的同一筆（t 相同）去重
+    ["PvE Alliance"] = { seen = {}, scans = { { t = clock - 700, zone = "貿易區", items = {} },
+                                               { t = clock - 650, zone = "藏寶海灣", items = {} } } },
+    ["PvE Neutral"] = { seen = {}, scans = { { t = clock - 650, zone = "藏寶海灣", items = {} } } },
+    -- 朋友舊版：ModernAH 鍵（沒陣營），鐵爐堡 → 聯盟
+    PvE = { seen = {}, scans = { { t = clock - 500, zone = "鐵爐堡", items = {} } } },
+  } } }
 ''')
 with open(os.path.join(ADDON, 'Main.lua'), encoding='utf-8') as f:
     L3.execute(f.read())
+with open(os.path.join(ADDON, 'UI.lua'), encoding='utf-8') as f:
+    L3.execute(f.read())
 L3.execute('''
   fire_event("PLAYER_LOGIN")
-  migrated_old = AHSnapshotDB.realms["CAMWOW TW4 Realm 1 PvE|Alliance"]
-  migrated_new = #AHSnapshotDB.realms["PvE"].scans
-  -- 部落的掃描角色接著掃：甲那筆不見了 → 跟聯盟角色上次的掃描比對
-  UnitFactionGroup = function() return "Horde" end
+  login = table.concat(printed, "/")
+  R3 = AHSnapshotDB.realms
+  ally, neut, horde = R3["PvE Alliance"], R3["PvE Neutral"], R3["PvE Horde"]
+  n_ally, n_neut, n_horde = #ally.scans, #neut.scans, #horde.scans
+  prev_in = neut.prev ~= nil and ally.prev == nil
+  daily_in = ally.daily[11] ~= nil and next(neut.daily or {}) == nil
+  old_gone = R3.PvE == nil and R3["CAMWOW TW4 Realm 1 PvE|Horde"] == nil
+  other_kept = #R3.Other.scans
+  SH = AHSnapshotDB.shared["小美"]
+  sh_ally, sh_neut, sh_pve = #SH["PvE Alliance"].scans, #SH["PvE Neutral"].scans, SH.PvE
+  sh_seen = SH["PvE Neutral"].seen[clock - 650]
+  ver = AHSnapshotDB.version
+  -- 預設檢視：最近一次自己掃描的拍賣場（藏寶海灣 → 中立）
+  view0 = AHSnapshot.ViewKey()
+  -- 現在在暴風城（聯盟角色）掃描 → 聯盟拍賣場，接上次聯盟的掃描？（prev 在中立，所以是第一次）
+  printed = {}
+  GetSubZoneText = function() return "貿易區" end
+  here_ally = AHSnapshot.AHRoot()
+  listener:ReceiveEvent("replicate_scan_complete", { R(2592,"毛料",5,500,"丙",3) })
+  scan_msg = table.concat(printed, "/")
+  view1 = AHSnapshot.ViewKey()
+  -- 到藏寶海灣（子區域），聯盟角色 → 中立拍賣場，跟上次中立的快照比對：2589 不見了
+  GetSubZoneText = function() return "藏寶海灣" end
+  here_neut = AHSnapshot.AHRoot()
   printed = {}
   listener:ReceiveEvent("replicate_scan_complete", { R(2592,"毛料",5,500,"丙",3) })
-  cross = table.concat(printed, "/")
-  scans_after = #AHSnapshotDB.realms["PvE"].scans
+  neut_msg = table.concat(printed, "/")
+  -- 部落角色在奧格瑪
+  GetSubZoneText = function() return "力量谷" end
+  UnitFactionGroup = function() return "Horde" end
+  here_horde = AHSnapshot.AHRoot()
+  -- 指令：切換、清單、排行指定拍賣場
+  printed = {}
+  SlashCmdList.AHSNAPSHOT("ah")
+  ah_list = table.concat(printed, "/")
+  printed = {}
+  SlashCmdList.AHSNAPSHOT("ah 聯盟")
+  view2 = AHSnapshot.ViewKey()
+  remembered = AHSnapshotDB.viewKey
+  SlashCmdList.AHSNAPSHOT("ah 不存在")
+  bad = printed[#printed]
+  printed = {}
+  SlashCmdList.AHSNAPSHOT("top 7 中立")
+  top_neut = table.concat(printed, "/")
+  view3 = AHSnapshot.ViewKey()
+  printed = {}
+  SlashCmdList.AHSNAPSHOT("")
+  status = table.concat(printed, "/")
 ''')
 G3 = L3.globals()
-check('舊鍵已移除', G3.migrated_old, None)
-check('搬到 PvE', G3.migrated_new, 1)
-check('換陣營角色也接得上（推估賣出約 20）', '推估賣出約 20 件' in G3.cross and '（PvE）' in G3.cross, True)
-check('同一份紀錄', G3.scans_after, 2)
+check('升級到第 5 版', G3.ver, 5)
+check('PvE 依地點拆成聯盟 2、中立 1；1.0 部落鍵搬到 PvE Horde',
+      (G3.n_ally, G3.n_neut, G3.n_horde), (2, 1, 1))
+check('上次快照跟著最新一次掃描（中立）', G3.prev_in, True)
+check('每日紀錄跟著多數掃描（聯盟）', G3.daily_in, True)
+check('舊鍵移除', G3.old_gone, True)
+check('認不出地點的留在原鍵', G3.other_kept, 1)
+check('朋友：舊鍵改正、同一筆去重', (G3.sh_ally, G3.sh_neut, G3.sh_pve, G3.sh_seen), (2, 1, None, True))
+check('登入提示搬家', '拍賣場改成分聯盟／部落／中立' in G3.login and 'PvE → PvE 聯盟 2 次' in G3.login, True)
+check('預設檢視最近掃描的拍賣場', G3.view0, 'PvE Neutral')
+check('目前所在：貿易區＝聯盟、藏寶海灣＝中立、力量谷部落＝部落',
+      (G3.here_ally, G3.here_neut, G3.here_horde), ('PvE Alliance', 'PvE Neutral', 'PvE Horde'))
+check('掃描訊息標出拍賣場', 'PvE 聯盟拍賣場' in G3.scan_msg, True)
+check('掃描後檢視切到那個拍賣場', G3.view1, 'PvE Alliance')
+check('中立接上次中立的快照（不跟聯盟混）', '推估賣出約 20 件' in G3.neut_msg and 'PvE 中立' in G3.neut_msg, True)
+check('/ahsnap ah 列出拍賣場', all(t in G3.ah_list for t in ('PvE 聯盟', 'PvE 中立', 'PvE 部落', 'Other（未分陣營）', '檢視中')), True)
+check('/ahsnap ah 聯盟 切換並記住', (G3.view2, G3.remembered), ('PvE Alliance', 'PvE Alliance'))
+check('找不到的拍賣場有提示', '找不到這個拍賣場' in (G3.bad or ''), True)
+check('top 可指定拍賣場、不改檢視', ('PvE 中立' in G3.top_neut, G3.view3), (True, 'PvE Alliance'))
+check('狀態顯示檢視中與目前所在', ('檢視中：PvE 聯盟' in G3.status, '目前所在：PvE 部落' in G3.status), (True, True))
+
+# 視窗的拍賣場按鈕：左鍵下一個、右鍵上一個，換了就重算
+L3.execute('''
+  printed = {}
+  SlashCmdList.AHSNAPSHOT("show")
+  win = frames.AHSnapshotFrame
+  b = win.ahButton
+  t0 = b.text
+  b.scripts.OnClick(b, "LeftButton")
+  t1, v1 = b.text, AHSnapshot.ViewKey()
+  b.scripts.OnClick(b, "RightButton")
+  t2 = b.text
+  b.scripts.OnClick(b, "RightButton")
+  t3 = b.text
+  b.scripts.OnEnter(b)
+  tipA = table.concat(GameTooltip.lines, "/")
+  errs = table.concat(printed, "/")
+''')
+check('按鈕顯示檢視中的拍賣場', G3.t0, '拍賣場：PvE 聯盟')
+check('左鍵下一個', (G3.t1, G3.v1), ('拍賣場：PvE 部落', 'PvE Horde'))
+check('右鍵上一個、會繞回', (G3.t2, G3.t3), ('拍賣場：PvE 聯盟', '拍賣場：Other（未分陣營）'))
+check('按鈕提示列出各拍賣場與目前所在', 'PvE 部落：自己 1 次、朋友 0 次、每日 0 天（目前所在）' in G3.tipA, True)
+check('切換全程沒有錯誤', '失敗' in G3.errs, False)
 
 # ---- 分析計算 ----
 L4 = new_lua()
@@ -368,11 +471,11 @@ L5.execute(r'''
   fire_event("PLAYER_LOGIN")
   login_msgs = table.concat(printed, "/")
   inbox_after = AHSnapshotInbox
-  mei = #AHSnapshotDB.shared["小美"].PvE.scans
+  mei = #AHSnapshotDB.shared["小美"]["PvE Alliance"].scans
   mei_item = AHSnapshotDB.items["2592"].name
   listener:ReceiveEvent("replicate_scan_complete", { R(2589,"亞麻布",20,2000,"甲",3) })
-  own_t = AHSnapshotDB.realms.PvE.scans[1].t
-  own_prev = AHSnapshotDB.realms.PvE.prev["2589"]
+  own_t = AHSnapshotDB.realms["PvE Alliance"].scans[1].t
+  own_prev = AHSnapshotDB.realms["PvE Alliance"].prev["2589"]
   fire_event("PLAYER_LOGOUT")
   outbox = AHSnapshotOutbox
   -- 視窗：預設包含朋友資料
@@ -399,7 +502,7 @@ check('匯入後清空 inbox', G5.inbox_after, None)
 check('匯入有提示', '已匯入朋友的掃描：小美 2 次' in G5.login_msgs, True)
 check('掃描用伺服器時間', G5.own_t, G5.clock + 7)
 check('剩餘時間原始值 3 存成第 3 級（不再 +1）', G5.own_prev, '2|s|100:20:0,0,20,0')
-check('登出寫 outbox', (G5.outbox or '').startswith('V^1^^') and '^PvE^' in G5.outbox and 'R^2589^' in G5.outbox, True)
+check('登出寫 outbox', (G5.outbox or '').startswith('V^1^^') and '^PvE Alliance^' in G5.outbox and 'R^2589^' in G5.outbox, True)
 check('outbox 不含朋友資料', 'R^2592^' in (G5.outbox or ''), False)
 check('視窗：朋友資料開、2 個來源', ('包含朋友資料：開' in G5.toggle_on, '2 個來源' in G5.foot_on), (True, True))
 check('切掉朋友資料後物品變少', (G5.rows_on, G5.rows_off, '關' in G5.toggle_off), (2, 1, True))
@@ -456,7 +559,7 @@ L6.execute(r'''
 G6 = L6.globals()
 check('升級提示', '舊版的賣出推估有誤' in G6.m1, True)
 check('升級後推估歸零、價格保留', G6.row, '20,1,100,100,100')
-check('舊快照清掉、升到最新版本', (G6.pv, G6.ver), (None, 4))
+check('舊快照清掉、升到最新版本', (G6.pv, G6.ver), (None, 5))
 check('提示只出現一次', '舊版的賣出推估有誤' in G6.m2, False)
 check('升級後下一次全掃當第一次', '第一次掃描' in G6.first_msg, True)
 

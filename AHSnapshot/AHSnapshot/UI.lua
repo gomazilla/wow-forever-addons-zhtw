@@ -106,6 +106,7 @@ Refresh = function()
   for _, b in ipairs(frame.dayButtons) do
     b:SetText((b.days == state.days and "|cffffd100" or "") .. b.days .. " 天" .. (b.days == state.days and "|r" or ""))
   end
+  frame.ahButton:SetText("拍賣場：" .. S.AHKeyLabel(S.ViewKey()))
   frame.soldToggle:SetText(state.onlySold and "只看有賣出：開" or "只看有賣出：關")
   frame.sharedToggle:SetText(state.includeShared and "包含朋友資料：開" or "包含朋友資料：關")
 
@@ -116,7 +117,7 @@ Refresh = function()
     hours, nDiff, nSources, nDays > 0 and string.format("＋%d 天每日紀錄", nDays) or "",
     first, math.min(state.offset + ROWS, #view), #view))
   if nDiff == 0 and nDays == 0 then
-    frame.footer:SetText("還沒有可比對的掃描：同一個拍賣場隔 30 分～2 小時再全掃一次，就會有賣出資料。")
+    frame.footer:SetText(S.AHKeyLabel(S.ViewKey()) .. " 拍賣場還沒有可比對的掃描：同一個拍賣場隔 30 分～2 小時再全掃一次，就會有賣出資料。")
   end
   frame.note:SetText(string.format(
     "(估)＝從上架消失推估，賣家撤單沒重上也可能被算成賣出｜觀察不滿 1 天不放大成每日｜|cff888888灰色 ?|r＝成交少於 %d 筆或觀察不到 %d 小時，僅供參考",
@@ -240,6 +241,38 @@ local function CreateWindow()
 
   local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
   close:SetPoint("TOPRIGHT", 2, 2)
+
+  -- 拍賣場切換：左鍵下一個、右鍵上一個；清單＝有資料的拍賣場＋目前所在
+  local ahButton = MakeButton(frame, "", 190)
+  ahButton:SetPoint("LEFT", title, "RIGHT", 16, 0)
+  ahButton:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+  local function ShowAHTip(self)
+    GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
+    GameTooltip:ClearLines()
+    GameTooltip:AddLine("拍賣場（左鍵下一個、右鍵上一個）", 1, 0.82, 0)
+    local view, here = S.ViewKey(), S.AHRoot()
+    for _, k in ipairs(S.ListViewKeys()) do
+      local own, friends, days = S.CountAHKey(AHSnapshotDB, k)
+      local line = string.format("%s%s：自己 %d 次、朋友 %d 次、每日 %d 天%s", k == view and "> " or "   ",
+        S.AHKeyLabel(k), own, friends, days, k == here and "（目前所在）" or "")
+      if k == view then GameTooltip:AddLine(line, 1, 0.82, 0) else GameTooltip:AddLine(line, 1, 1, 1) end
+    end
+    GameTooltip:AddLine("聯盟、部落、中立（藏寶海灣／加基森／永望鎮）是三個不同的拍賣場，資料分開算。", 0.7, 0.7, 0.7, true)
+    GameTooltip:Show()
+  end
+  ahButton:SetScript("OnClick", function(self, button)
+    local keys, cur = S.ListViewKeys(), S.ViewKey()
+    if #keys == 0 then return end
+    local idx = 1
+    for i, k in ipairs(keys) do if k == cur then idx = i end end
+    idx = idx + (button == "RightButton" and -1 or 1)
+    if idx > #keys then idx = 1 elseif idx < 1 then idx = #keys end
+    S.SetViewKey(keys[idx])
+    if GameTooltip:IsOwned(self) then ShowAHTip(self) end
+  end)
+  ahButton:SetScript("OnEnter", ShowAHTip)
+  ahButton:SetScript("OnLeave", function() GameTooltip:Hide() end)
+  frame.ahButton = ahButton
 
   -- 天數
   frame.dayButtons = {}
@@ -385,5 +418,12 @@ end
 
 -- 掃描完成後，視窗開著就更新
 function S.OnDataChanged()
+  if frame and frame:IsShown() then Recompute() end
+end
+
+-- 換了檢視的拍賣場：從頭顯示，明細關掉（那是別的拍賣場的）
+function S.OnViewKeyChanged()
+  state.offset = 0
+  if detail then detail:Hide() end
   if frame and frame:IsShown() then Recompute() end
 end

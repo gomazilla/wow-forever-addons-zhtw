@@ -11,7 +11,7 @@ Auctionator 全掃 → AHSnapshotDB.realms[鍵].scans（逐次掃描，最近 de
        → AHSnapshotDB.shared[來源][鍵].scans
 ```
 
-- 拍賣場鍵跟 Auctionator 一致（`Auctionator.Variables.GetConnectedRealmRoot()`，Forever 實測是 `PvE`）。
+- 拍賣場鍵＝「規則名 陣營」，例如 `PvE Alliance`、`PvE Horde`、`PvE Neutral`（見下方「拍賣場鍵（1.3.1 起）」）。
 - 掃描時間用 `GetServerTime()`，不同人的時間才對得起來。
 - 同步程式只在遊戲**關著**時寫存檔（遊戲登出會覆蓋存檔）；寫之前備份到 `%APPDATA%\AHSnapshotSync\backups`（留 5 份）。
 - 每個人只寫自己的雲端檔案，不會互相覆蓋；朋友的資料只在本機合併，不會再轉傳（不會繞圈）。
@@ -115,5 +115,22 @@ Forever 的全掃（`C_AuctionHouse` replicate）**沒有賣家名字、也沒�
 以真實資料（10 次掃描）實測：存檔每次掃描約 96 KB、分享檔每次約 67 KB（原本約 100 KB）、每日紀錄每天約 100 KB。
 一天掃 10 次時，存檔約穩定在 6～7 MB，分享檔約 2～3 MB。
 
-資料版本：`AHSnapshotDB.version`（目前 4）、交換格式 `V` 版本（目前 1）、列格式 `S.ROW_SCHEMA`（1）、
+資料版本：`AHSnapshotDB.version`（目前 5）、交換格式 `V` 版本（目前 1）、列格式 `S.ROW_SCHEMA`（1）、
 推估版本 `S.EST_VERSION`（2）、快照格式 `S.PREV_VERSION`（2）、每日格式 `S.DAILY_SCHEMA`（1）。
+
+## 拍賣場鍵（1.3.1 起）
+
+Forever 有三個拍賣場：**聯盟、部落、中立**（藏寶海灣、加基森、永望鎮）。資料依拍賣場分開存、分開分析。
+
+- 鍵＝`規則名 陣營`。規則名：`RegionalUniqueNamesEnabled()` 時用 `GetRegionalRulesetName()`（Forever 是 `PvE`），否則 `GetRealmName()`。
+  陣營：目前的子區域／區域／小地圖區域任何一個是中立拍賣場就是 `Neutral`，否則是角色陣營（`S.MakeAHKey`）。
+- 1.3.0 以前跟 Auctionator 的 `GetConnectedRealmRoot()`：新式拍賣場那支回 `PvE`（沒陣營），舊式那支回 `GetRealmName() .. " " .. 陣營`
+  （而且在藏寶海灣也記成角色陣營）。不同人走到不同支，鍵就對不上，視窗看不到朋友資料。現在自己算，不再看 Auctionator。
+- 舊鍵正規化 `S.NormalizeAHKey(鍵, 掃描地點)`：地點是中立拍賣場 → `Neutral`；鍵有陣營 → 照用；
+  沒有 → 看地點是哪個陣營的主城（`S.ZONE_FACTION`）；都判斷不出來 → 留在原鍵（視窗顯示「未分陣營」，仍可切過去看）。
+- 資料版本 5（`S.MigrateToV5`，登入時一次）：自己的掃描逐筆依地點搬家；上次快照（prev）跟著最新一次掃描、
+  每日紀錄跟著多數掃描；併進已有的鍵時依 t 去重，`rolledBefore` 取早的。朋友資料同樣處理。
+- 匯入 inbox 時每筆掃描都正規化（朋友還在用舊版也對得上）。
+- 視窗與指令看「檢視中的拍賣場」`AHSnapshotDB.viewKey`：記住上次選的；剛在某拍賣場掃描就切到那裡；
+  沒選過用最近一次自己掃描的拍賣場。每日彙整每個拍賣場各自做。
+

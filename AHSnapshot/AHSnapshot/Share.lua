@@ -97,6 +97,8 @@ function S.ImportInbox(db, text, now, keepDays)
         end
       elseif kind == "S" and source then
         local rk, t = S.Dec(f[2] or ""), num(f[3])
+        -- 朋友舊版插件的鍵照 Auctionator（可能沒有陣營，或在中立拍賣場記成角色陣營）：依掃描地點改成正確的鍵
+        if rk ~= "" then rk = S.NormalizeAHKey(rk, S.Dec(f[8] or "")) or rk end
         cur, skip = nil, true
         local rolled = db.realms and db.realms[rk] and db.realms[rk].rolledBefore
         if rk ~= "" and t and (not since or t >= since) and (not rolled or t >= rolled) then

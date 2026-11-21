@@ -142,7 +142,7 @@ try:
     LB.execute(r'''
       own_before = #AHSnapshotDB.realms.PvE.scans
       added, newItems = AHSnapshot.ImportInbox(AHSnapshotDB, AHSnapshotInbox, os.time(), 30)
-      ming = AHSnapshotDB.shared["阿明"] and #AHSnapshotDB.shared["阿明"].PvE.scans
+      ming = AHSnapshotDB.shared["阿明"] and #AHSnapshotDB.shared["阿明"]["PvE Alliance"].scans   -- 1.3.1：貿易區 → 聯盟
       bad = AHSnapshotDB.shared["壞人"]
       badRows = 0
       if bad then for _, sc in ipairs(bad.PvE.scans) do for _ in pairs(sc.items) do badRows = badRows + 1 end end end

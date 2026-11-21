@@ -165,3 +165,54 @@ for k in start:
         gone = n - min(n, b.get(sig, 0))
         old_sold += gone * sig[0]
 print(f'\n對照：舊演算法（逐筆指紋）在同一情境會推估賣出約 {old_sold}（含撤單、部分購買整筆、壓價重上）')
+
+
+# ---- 1.3.1 拍賣場分聯盟／部落／中立：用真實存檔模擬登入時的搬家（只在記憶體裡做，不寫檔）----
+def ah_counts(title):
+    print(title)
+    L.execute('''
+      cnt = {}
+      for k, ah in pairs(AHSnapshotDB.realms or {}) do
+        local d = 0
+        for _ in pairs(ah.daily or {}) do d = d + 1 end
+        cnt[#cnt + 1] = string.format("  自己 %-14s 逐次掃描 %3d 次、每日紀錄 %2d 天", k, #(ah.scans or {}), d)
+      end
+      for src, sh in pairs(AHSnapshotDB.shared or {}) do
+        for k, ah in pairs(sh) do
+          cnt[#cnt + 1] = string.format("  朋友 %-6s %-14s 逐次掃描 %3d 次", src, k, #(ah.scans or {}))
+        end
+      end
+      table.sort(cnt)
+    ''')
+    for line in G.cnt.values():
+        print(line)
+
+
+print('\n== 1.3.1 拍賣場搬家模擬 ==')
+ah_counts('搬家前：')
+L.execute('''
+  before = AHSnapshot.CollectSources(AHSnapshotDB, "PvE Alliance", true)
+  report = AHSnapshot.MigrateToV5(AHSnapshotDB, "PvE")
+  -- 存檔裡還沒匯入的 inbox（同步工具寫進來、下次登入才讀）也照新規則匯入
+  inboxAdded = {}
+  if type(AHSnapshotInbox) == "string" and AHSnapshotInbox ~= "" then
+    inboxAdded = AHSnapshot.ImportInbox(AHSnapshotDB, AHSnapshotInbox, GetServerTimeSim or 0, nil)
+  end
+  after = AHSnapshot.CollectSources(AHSnapshotDB, "PvE Alliance", true)
+''')
+rep = []
+if G.report:
+    for old, dst in G.report.items():
+        for k, n in dst.items():
+            rep.append(f'{old} → {k} {n} 次')
+print('搬家報告：', '、'.join(rep) or '（沒有要搬的）')
+print('inbox 匯入：', dict(G.inboxAdded.items()) if G.inboxAdded else '（沒有）')
+ah_counts('搬家後：')
+srcs = lambda x: [f"{(x[i].source or '自己')} {len(list(x[i].scans.values()))} 次" for i in range(1, len(x) + 1)]
+print('搬家前 CollectSources("PvE Alliance")：', srcs(G.before))
+print('搬家後 CollectSources("PvE Alliance")：', srcs(G.after))
+names = {G.after[i].source for i in range(1, len(G.after) + 1)}
+ok = None in names and len(names) >= 3
+print('結果：' + ('自己＋朋友都在同一個拍賣場 ✔' if ok else '還是對不上 ✘'))
+L.execute('klist = AHSnapshot.ListAHKeys(AHSnapshotDB)')
+print('視窗可切換的拍賣場：', [G.AHSnapshot.AHKeyLabel(k) for k in G.klist.values()])

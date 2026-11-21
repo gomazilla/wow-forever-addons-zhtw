@@ -177,7 +177,7 @@ L2.execute(r'''
 ''')
 msgs = list(L2.globals().printed.values())
 G2 = L2.globals()
-check('登入時升級到第 4 版', (G2.v, G2.row), (4, '20,1,100,100,100'))
+check('登入時升級到最新版', (G2.v, G2.row), (5, '20,1,100,100,100'))
 check('升級有提示一次', sum('存檔格式更新' in m for m in msgs), 1)
 check('預設保留天數', (G2.db.detailDays, G2.db.dailyDays, G2.db.keepDays), (3, 30, None))
 check('朋友物品先查不到', G2.before, None)

@@ -18,12 +18,27 @@ local function Safe(fn)
   return ok and v or ""
 end
 
--- 拍賣場的分法跟 Auctionator 一致：Forever 是同規則（例如 "PvE"）的所有伺服器、兩個陣營共用一個拍賣場，
--- 所以任何角色掃到的資料都併在一起。讀不到 Auctionator 的分法才退回「伺服器|陣營」。
+-- 拍賣場分三個：聯盟、部落、中立（藏寶海灣／加基森／永望鎮）。鍵＝「規則名 陣營」，例如 "PvE Alliance"。
+-- 自己算，不跟 Auctionator：它新舊兩種拍賣場的分法不同，朋友之間會對不上（見 DESIGN.md）。
+local function AHBase()
+  if type(RegionalUniqueNamesEnabled) == "function" and type(GetRegionalRulesetName) == "function" then
+    local ok, on = pcall(RegionalUniqueNamesEnabled)
+    if ok and on then
+      local ok2, name = pcall(GetRegionalRulesetName)
+      if ok2 and type(name) == "string" and name ~= "" then return name end
+    end
+  end
+  local name = Safe(GetRealmName)
+  return name ~= "" and name or "?"
+end
+
+local function CurrentZones()
+  return { Safe(GetSubZoneText), Safe(GetRealZoneText), Safe(GetZoneText), Safe(GetMinimapZoneText) }
+end
+
 local function AHRoot()
-  local ok, root = pcall(function() return Auctionator.Variables.GetConnectedRealmRoot() end)
-  if ok and type(root) == "string" and root ~= "" then return root end
-  return (GetRealmName() or "?") .. "|" .. (UnitFactionGroup("player") or "?")
+  local fac = type(UnitFactionGroup) == "function" and UnitFactionGroup("player") or nil
+  return S.MakeAHKey(AHBase(), fac, CurrentZones())
 end
 
 local function GetAH()
@@ -36,6 +51,38 @@ end
 S.GetAH = GetAH
 S.Money = Money
 S.AHRoot = AHRoot
+S.AHBase = AHBase
+
+-- ---- 視窗／指令目前檢視的拍賣場 ----
+-- 記住上次選的（AHSnapshotDB.viewKey）；沒選過或那個拍賣場已經沒資料，就用最近一次自己掃描的拍賣場，
+-- 再沒有就用目前所在的拍賣場。
+local function LatestOwnKey()
+  local best, bestT = nil, nil
+  for k, ah in pairs(AHSnapshotDB.realms or {}) do
+    local last = ah.scans and ah.scans[#ah.scans]
+    if last and last.t and (not bestT or last.t > bestT) then best, bestT = k, last.t end
+  end
+  return best
+end
+
+function S.ListViewKeys()
+  return S.ListAHKeys(AHSnapshotDB, AHRoot())
+end
+
+function S.ViewKey()
+  local db = AHSnapshotDB
+  local k = db.viewKey
+  if k then
+    for _, key in ipairs(S.ListAHKeys(db)) do if key == k then return k end end
+    if k == AHRoot() then return k end
+  end
+  return LatestOwnKey() or AHRoot()
+end
+
+function S.SetViewKey(key)
+  AHSnapshotDB.viewKey = key
+  if S.OnViewKeyChanged then S.OnViewKeyChanged() end
+end
 
 -- 掃描時間用伺服器時間，大家（不同電腦）的時間才對得起來
 function S.Now()
@@ -47,8 +94,8 @@ function S.Now()
 end
 
 -- 分析用的來源（自己＋朋友），UI.lua 用
-function S.GetSources(includeShared)
-  return S.CollectSources(AHSnapshotDB, AHRoot(), includeShared)
+function S.GetSources(includeShared, key)
+  return S.CollectSources(AHSnapshotDB, key or S.ViewKey(), includeShared)
 end
 
 local function SharedNames()
@@ -58,19 +105,6 @@ local function SharedNames()
   return names
 end
 S.SharedNames = SharedNames
-
--- 1.0 版用「伺服器|陣營」當鍵；新鍵還沒有資料時，把舊資料搬過去（只搬一份）
-local function MigrateOldKeys()
-  local db, rk = AHSnapshotDB, AHRoot()
-  if db.realms[rk] and #(db.realms[rk].scans or {}) > 0 then return end
-  for key, data in pairs(db.realms) do
-    if key ~= rk and key:find("|", 1, true) and #(data.scans or {}) > 0 then
-      db.realms[rk] = data
-      db.realms[key] = nil
-      return key
-    end
-  end
-end
 
 -- 記下物品的基本資料（名稱、品質、商店收購價、分類），分析時要用
 -- Forever 是新版引擎，全域 GetItemInfo 已移除，改用 C_Item 版
@@ -119,9 +153,15 @@ local function Capture(rawFullScan)
 end
 
 -- 超過保留期的逐次掃描濃縮成每日紀錄（自己＋朋友合併後才濃縮，見 DESIGN.md）
+-- 每個有資料的拍賣場（自己的或朋友的）各自濃縮
 function S.Rollup(now)
   local db = AHSnapshotDB
-  local ok, err = pcall(S.RollupOld, db, AHRoot(), now or S.Now(), db.detailDays, db.dailyDays, S.LocalDayOffset())
+  local ok, err = pcall(function()
+    local t, off = now or S.Now(), S.LocalDayOffset()
+    for _, rk in ipairs(S.ListAHKeys(db)) do
+      S.RollupOld(db, rk, t, db.detailDays, db.dailyDays, off)
+    end
+  end)
   if not ok then db.lastError = { t = time(), err = "每日彙整失敗：" .. tostring(err) } end
 end
 
@@ -180,8 +220,9 @@ local function OnScanComplete(rawFullScan)
     local now = S.Now()
     local scan = S.ProcessScan(ah, listings, now, zone, hasTL, AHSnapshotDB.items)
     S.Rollup(now)
+    AHSnapshotDB.viewKey = rk   -- 剛在這個拍賣場掃描，視窗就切到這裡
 
-    local msg = string.format("已記錄 %d 筆上架、%d 種物品（%s）。", scan.n, scan.nItems, rk)
+    local msg = string.format("已記錄 %d 筆上架、%d 種物品（%s拍賣場）。", scan.n, scan.nItems, S.AHKeyLabel(rk))
     if scan.diff == 1 then
       local sold, soldN = 0, 0
       for _, row in pairs(scan.items) do
@@ -323,21 +364,52 @@ local function CreateIcon()
   C_Timer.NewTicker(1, UpdateIcon)
 end
 
+-- 列出拍賣場與資料量，標出檢視中與目前所在
+local function PrintAHList()
+  local view, here = S.ViewKey(), AHRoot()
+  for _, k in ipairs(S.ListViewKeys()) do
+    local own, friends, days = S.CountAHKey(AHSnapshotDB, k)
+    local marks = {}
+    if k == view then marks[#marks + 1] = "|cffffd100檢視中|r" end
+    if k == here then marks[#marks + 1] = "目前所在" end
+    Print(string.format("%s：自己 %d 次、朋友 %d 次、每日紀錄 %d 天%s", S.AHKeyLabel(k), own, friends, days,
+      #marks > 0 and ("（" .. table.concat(marks, "、") .. "）") or ""))
+  end
+end
+
 local function SlashHandler(msg)
   msg = (msg or ""):lower()
   local cmd, arg = msg:match("^(%S*)%s*(.-)$")
-  local ah, rk = GetAH()
+  local rk = S.ViewKey()
+  local ah = AHSnapshotDB.realms[rk] or {}
 
   if cmd == "show" then
     S.ToggleWindow()
+  elseif cmd == "ah" then
+    if arg == "" then
+      PrintAHList()
+      Print("切換：/ahsnap ah 聯盟｜部落｜中立（或打完整名稱，例如 PvE Alliance）")
+    else
+      local k = S.FindAHKey(S.ListViewKeys(), arg, AHBase())
+      if not k then Print("找不到這個拍賣場：" .. arg .. "。打 /ahsnap ah 看清單。"); return end
+      S.SetViewKey(k)
+      Print("改看 " .. S.AHKeyLabel(k) .. " 拍賣場的資料。")
+    end
   elseif cmd == "top" then
-    local days = tonumber(arg) or 7
-    local all, covered = S.Analyze(S.GetSources(true), S.Now(), days, AHSnapshotDB.items)
+    local dayArg, ahArg = arg:match("^(%d+)%s*(.-)$")
+    local days = tonumber(dayArg) or 7
+    if not dayArg then ahArg = arg end
+    if ahArg and ahArg ~= "" then
+      local k = S.FindAHKey(S.ListViewKeys(), ahArg, AHBase())
+      if not k then Print("找不到這個拍賣場：" .. ahArg .. "。打 /ahsnap ah 看清單。"); return end
+      rk = k
+    end
+    local all, covered = S.Analyze(S.GetSources(true, rk), S.Now(), days, AHSnapshotDB.items)
     local list = {}
     for _, r in ipairs(all) do if r.sold > 0 then list[#list + 1] = r end end
     S.SortList(list, "soldPerDay", false)   -- 低可信度的排在可信的後面
-    if #list == 0 then Print("最近 " .. days .. " 天還沒有推估資料（至少要掃兩次）。"); return end
-    Print(string.format("最近 %d 天推估賣出排行（估算，有效觀察 %.1f 小時，%s）：", days, covered / 3600, rk))
+    if #list == 0 then Print("最近 " .. days .. " 天還沒有推估資料（" .. S.AHKeyLabel(rk) .. "，至少要掃兩次）。"); return end
+    Print(string.format("最近 %d 天推估賣出排行（估算，有效觀察 %.1f 小時，%s 拍賣場）：", days, covered / 3600, S.AHKeyLabel(rk)))
     for i = 1, math.min(15, #list) do
       local r = list[i]
       local line = string.format("%2d. %s  每日約 %s 件（%d 筆成交）  中位價 %s", i, r.name or r.key,
@@ -372,13 +444,17 @@ local function SlashHandler(msg)
       Print("還沒有朋友的資料。朋友的資料由同步工具（AHSync）在遊戲關閉時寫進來，下次登入時匯入。")
     else
       for _, src in ipairs(names) do
-        local n, last = 0, nil
-        for _, a in pairs(AHSnapshotDB.shared[src]) do
+        local n, last, parts = 0, nil, {}
+        local sh = AHSnapshotDB.shared[src]
+        for _, k in ipairs(S.ListAHKeys({ shared = { [src] = sh } })) do
+          local a = sh[k]
           n = n + #(a.scans or {})
+          parts[#parts + 1] = S.AHKeyLabel(k) .. " " .. #(a.scans or {})
           local l = a.scans and a.scans[#a.scans]
           if l and (not last or l.t > last) then last = l.t end
         end
-        Print(string.format("%s：%d 次掃描，最新 %s", src, n, last and date("%m/%d %H:%M", last) or "-"))
+        Print(string.format("%s：%d 次掃描（%s），最新 %s", src, n, table.concat(parts, "、"),
+          last and date("%m/%d %H:%M", last) or "-"))
       end
     end
     Print(string.format("分享給朋友、和朋友合併的是最近 %d 天的逐次掃描；更早的濃縮成每日紀錄（只存在自己電腦）。",
@@ -404,23 +480,24 @@ local function SlashHandler(msg)
   elseif cmd == "reset" then
     if arg == "confirm" then
       AHSnapshotDB.realms[rk] = nil
-      Print("已清除 " .. rk .. " 的所有快照。")
+      Print("已清除 " .. S.AHKeyLabel(rk) .. " 拍賣場自己的所有快照（朋友的資料不動）。")
     else
-      Print("會清除 " .. rk .. " 的所有快照，確定請輸入 /ahsnap reset confirm")
+      Print("會清除 " .. S.AHKeyLabel(rk) .. " 拍賣場自己的所有快照，確定請輸入 /ahsnap reset confirm（要清別的拍賣場先用 /ahsnap ah 切換）")
     end
   else
     local scans = ah.scans or {}
     local last = scans[#scans]
     local nDays = 0
     for _ in pairs(ah.daily or {}) do nDays = nDays + 1 end
-    Print(string.format("%s：逐次掃描 %d 次（保留 %d 天）、每日紀錄 %d 天（保留 %d 天）。",
-      rk, #scans, AHSnapshotDB.detailDays, nDays, AHSnapshotDB.dailyDays))
+    Print(string.format("檢視中：%s 拍賣場，逐次掃描 %d 次（保留 %d 天）、每日紀錄 %d 天（保留 %d 天）。",
+      S.AHKeyLabel(rk), #scans, AHSnapshotDB.detailDays, nDays, AHSnapshotDB.dailyDays))
+    if rk ~= AHRoot() then Print("目前所在：" .. S.AHKeyLabel(AHRoot()) .. " 拍賣場。") end
     if last then
       Print(string.format("上次掃描：%s，%d 筆上架。", date("%m/%d %H:%M", last.t), last.n))
     end
     Print(WaitText())
     Print("在拍賣場用 Auctionator 的「Scan」做全掃，本插件會自動記錄。")
-    Print("/ahsnap show 分析視窗｜top [天數] 賣出排行｜next 距下次掃描｜remind 分鐘 燈號間隔｜icon 顯示/隱藏燈號｜share 朋友資料｜detail 天數 逐次掃描保留｜keep 天數 每日紀錄保留｜reset")
+    Print("/ahsnap show 分析視窗｜ah [聯盟/部落/中立] 切換拍賣場｜top [天數] [拍賣場] 賣出排行｜next 距下次掃描｜remind 分鐘 燈號間隔｜icon 顯示/隱藏燈號｜share 朋友資料｜detail 天數 逐次掃描保留｜keep 天數 每日紀錄保留｜reset")
   end
 end
 
@@ -473,15 +550,26 @@ f:SetScript("OnEvent", function(_, event, ...)
   if S.MigrateToV4(db) then
     Print("存檔格式更新：逐次掃描保留 3 天，更早的濃縮成每日紀錄（保留 30 天），存檔不會再一直變大。可用 /ahsnap detail、/ahsnap keep 調整。")
   end
-  db.version = S.DB_VERSION
   db.realms = db.realms or {}
   db.items = db.items or {}
   db.shared = db.shared or {}
+  -- 拍賣場改分聯盟／部落／中立：舊資料依掃描地點搬到正確的拍賣場，只做一次
+  local moved = S.MigrateToV5(db, AHBase())
+  if moved then
+    local parts = {}
+    for old, dst in pairs(moved) do
+      for k, n in pairs(dst) do parts[#parts + 1] = string.format("%s → %s %d 次", old, S.AHKeyLabel(k), n) end
+    end
+    table.sort(parts)
+    Print("拍賣場改成分聯盟／部落／中立，朋友的資料現在對得上了。" ..
+      (#parts > 0 and ("舊資料已依掃描地點搬家：" .. table.concat(parts, "、") .. "。") or "") ..
+      "視窗上方的「拍賣場」按鈕可切換，或用 /ahsnap ah。")
+  end
+  db.version = S.DB_VERSION
   db.detailDays = db.detailDays or 3
   db.dailyDays = db.dailyDays or 30
   db.fields = S.ROW_FIELDS
   S.UnpackItems(db.items)
-  MigrateOldKeys()
   ImportInbox()
   S.Rollup()
   f:RegisterEvent("GET_ITEM_INFO_RECEIVED")

@@ -2,7 +2,7 @@
 AHSnapshot = AHSnapshot or {}
 local S = AHSnapshot
 
-S.DB_VERSION = 4   -- 2：加 shared（朋友資料）；3：賣出推估改成依單價分層，清掉舊推估；4：列去尾端 0、物品資料精簡、每日彙整
+S.DB_VERSION = 5   -- 2：加 shared（朋友資料）；3：賣出推估改成依單價分層，清掉舊推估；4：列去尾端 0、物品資料精簡、每日彙整；5：拍賣場分聯盟／部落／中立
 S.EST_VERSION = 2  -- 賣出推估演算法版本：1＝逐筆指紋（有誤，已停用），2＝依單價分層
 S.ESTIMATE_ROW_FROM = 6  -- 列欄位第 6 欄起（sold 以後）是推估值；前 5 欄（量與價格）一直是正確的
 
@@ -430,6 +430,246 @@ function S.MigrateToV4(db)
   db.keepDays, db.shareKeepDays, db.outboxDays = nil, nil, nil
   db.version = 4
   return true
+end
+
+-- ---- 拍賣場鍵 ----
+-- Forever 有三個拍賣場：聯盟、部落、中立（藏寶海灣／加基森／永望鎮）。
+-- 鍵＝「規則名 陣營」，例如 "PvE Alliance"、"PvE Horde"、"PvE Neutral"
+-- （跟 Auctionator 舊式拍賣場的寫法一致，朋友用舊版插件傳來的多半就是這種）。
+-- 1.3.0 以前用 Auctionator 的分法，新式拍賣場那邊會給沒有陣營的 "PvE"，跟朋友對不上，所以改成自己算。
+S.FACTIONS = { Alliance = "聯盟", Horde = "部落", Neutral = "中立" }
+S.FACTION_ORDER = { Alliance = 1, Horde = 2, Neutral = 3 }
+S.NEUTRAL_ZONES = {
+  ["藏寶海灣"] = true, ["加基森"] = true, ["永望鎮"] = true,
+  ["Booty Bay"] = true, ["Gadgetzan"] = true, ["Everlook"] = true,
+}
+-- 舊資料搬家用：掃描地點 → 陣營。只列確定的主城與拍賣場所在的子區域，認不出來的不猜。
+S.ZONE_FACTION = {
+  ["暴風城"] = "Alliance", ["貿易區"] = "Alliance", ["鐵爐堡"] = "Alliance", ["達納蘇斯"] = "Alliance",
+  ["艾克索達"] = "Alliance",
+  ["Stormwind City"] = "Alliance", ["Stormwind"] = "Alliance", ["Trade District"] = "Alliance",
+  ["Ironforge"] = "Alliance", ["The Commons"] = "Alliance", ["Darnassus"] = "Alliance",
+  ["Tradesmen's Terrace"] = "Alliance", ["The Exodar"] = "Alliance",
+  ["奧格瑪"] = "Horde", ["力量谷"] = "Horde", ["幽暗城"] = "Horde", ["雷霆崖"] = "Horde", ["銀月城"] = "Horde",
+  ["Orgrimmar"] = "Horde", ["Valley of Strength"] = "Horde", ["Undercity"] = "Horde",
+  ["The Trade Quarter"] = "Horde", ["Thunder Bluff"] = "Horde", ["Silvermoon City"] = "Horde",
+}
+for z in pairs(S.NEUTRAL_ZONES) do S.ZONE_FACTION[z] = "Neutral" end
+
+function S.ZoneFaction(zone)
+  return zone and S.ZONE_FACTION[zone] or nil
+end
+
+-- 拆成（規則名, 陣營或 nil, 是不是 1.0 版「伺服器|陣營」的寫法）
+function S.SplitAHKey(key)
+  key = tostring(key or "")
+  local base, fac = key:match("^(.*)|(%a+)$")
+  if base and S.FACTIONS[fac] then return base, fac, true end
+  base, fac = key:match("^(.+) (%a+)$")
+  if base and S.FACTIONS[fac] then return base, fac, false end
+  return key, nil, false
+end
+
+-- 現在位置的拍賣場鍵。zones：目前的地區名稱（子區域、區域…），任何一個是中立拍賣場就算中立。
+function S.MakeAHKey(base, faction, zones)
+  for _, z in ipairs(zones or {}) do
+    if S.NEUTRAL_ZONES[z] then return base .. " Neutral" end
+  end
+  if faction ~= "Alliance" and faction ~= "Horde" then faction = "Neutral" end
+  return base .. " " .. faction
+end
+
+-- 舊鍵、或朋友舊版插件傳來的鍵 → 正確的鍵；判斷不出來回傳 nil（呼叫端保留原鍵）。
+--   掃描地點是中立拍賣場 → 中立（舊式 Auctionator 在藏寶海灣也會記成角色的陣營）
+--   鍵本身有陣營 → 照用；沒有 → 看掃描地點是哪個陣營的主城
+-- curBase：1.0 版「伺服器|陣營」的伺服器名換成現在的規則名（那時候的伺服器名跟現在不同）
+function S.NormalizeAHKey(key, zone, curBase)
+  local base, fac, legacy = S.SplitAHKey(key)
+  if legacy and curBase and curBase ~= "" then base = curBase end
+  local zf = S.ZoneFaction(zone)
+  if zf == "Neutral" then return base .. " Neutral" end
+  if fac then return base .. " " .. fac end
+  if zf then return base .. " " .. zf end
+  return nil
+end
+
+-- 顯示用名稱，例如 "PvE 聯盟"；沒有陣營的舊鍵加註
+function S.AHKeyLabel(key)
+  local base, fac = S.SplitAHKey(key)
+  if fac then return base .. " " .. S.FACTIONS[fac] end
+  return tostring(key) .. "（未分陣營）"
+end
+
+-- 依 t 去重、由舊到新排序
+local function DedupeScans(scans)
+  local out, seen = {}, {}
+  for _, sc in ipairs(scans or {}) do
+    if sc.t and not seen[sc.t] then out[#out + 1] = sc; seen[sc.t] = true end
+  end
+  table.sort(out, function(a, b) return a.t < b.t end)
+  return out, seen
+end
+S.DedupeScans = DedupeScans
+
+local function MergeAH(dst, part)
+  local all = {}
+  for _, sc in ipairs(dst.scans or {}) do all[#all + 1] = sc end
+  for _, sc in ipairs(part.scans or {}) do all[#all + 1] = sc end
+  dst.scans = DedupeScans(all)
+  if part.prev and (not dst.prev or (part.prevTime or 0) > (dst.prevTime or 0)) then
+    dst.prev, dst.prevVersion, dst.prevTime = part.prev, part.prevVersion, part.prevTime
+  end
+  if part.daily then
+    dst.daily = dst.daily or {}
+    for d, v in pairs(part.daily) do if dst.daily[d] == nil then dst.daily[d] = v end end
+  end
+  if part.rolledBefore then
+    -- 取早的：寧可某天少併一份，也不要把還沒濃縮的掃描直接丟掉
+    dst.rolledBefore = dst.rolledBefore and math.min(dst.rolledBefore, part.rolledBefore) or part.rolledBefore
+  end
+end
+
+-- 自己的資料依掃描地點分到正確的鍵。上次快照（prev）跟著最新一次掃描走，
+-- 每日紀錄跟著多數掃描走；完全判斷不出來的留在原鍵。
+-- 回傳 { [舊鍵] = { [新鍵] = 搬過去的掃描數 } }
+function S.RekeyRealms(db, curBase)
+  local report = {}
+  local keys = {}
+  for k in pairs(db.realms or {}) do keys[#keys + 1] = k end
+  table.sort(keys)
+  for _, key in ipairs(keys) do
+    local ah = db.realms[key]
+    local whole = S.NormalizeAHKey(key, nil, curBase)
+    local fallback = whole or key
+    local parts, count, latestKey, latestT = {}, {}, nil, nil
+    for _, sc in ipairs(ah.scans or {}) do
+      local nk = S.NormalizeAHKey(key, sc.zone, curBase) or fallback
+      parts[nk] = parts[nk] or { scans = {} }
+      table.insert(parts[nk].scans, sc)
+      count[nk] = (count[nk] or 0) + 1
+      if not latestT or sc.t > latestT then latestT, latestKey = sc.t, nk end
+    end
+    latestKey = latestKey or fallback
+    local majority, best = nil, -1
+    for k, c in pairs(count) do
+      if c > best or (c == best and k == latestKey) then majority, best = k, c end
+    end
+    majority = majority or fallback
+
+    local moves = latestKey ~= key or majority ~= key
+    for k in pairs(parts) do if k ~= key then moves = true end end
+    if moves then
+      parts[latestKey] = parts[latestKey] or { scans = {} }
+      parts[latestKey].prev, parts[latestKey].prevVersion, parts[latestKey].prevTime = ah.prev, ah.prevVersion, ah.prevTime
+      parts[majority] = parts[majority] or { scans = {} }
+      parts[majority].daily, parts[majority].rolledBefore = ah.daily, ah.rolledBefore
+      db.realms[key] = nil
+      for k, part in pairs(parts) do
+        db.realms[k] = db.realms[k] or { scans = {} }
+        MergeAH(db.realms[k], part)
+        if k ~= key then
+          report[key] = report[key] or {}
+          report[key][k] = #part.scans
+        end
+      end
+    end
+  end
+  return report
+end
+
+-- 朋友資料也照同一套規則分到正確的鍵（依 t 去重、重建 seen）
+function S.RekeyShared(db, curBase)
+  for src, sh in pairs(db.shared or {}) do
+    local new, any = {}, false
+    for key, ah in pairs(sh) do
+      local fallback = S.NormalizeAHKey(key, nil, curBase) or key
+      for _, sc in ipairs(ah.scans or {}) do
+        local nk = S.NormalizeAHKey(key, sc.zone, curBase) or fallback
+        new[nk] = new[nk] or { scans = {} }
+        table.insert(new[nk].scans, sc)
+      end
+    end
+    for _, a in pairs(new) do
+      a.scans, a.seen = DedupeScans(a.scans)
+      any = true
+    end
+    db.shared[src] = any and new or nil
+  end
+end
+
+-- 資料升級到第 5 版：拍賣場改分聯盟／部落／中立。回傳搬家報告（沒升級回傳 nil）
+function S.MigrateToV5(db, curBase)
+  if (db.version or 1) >= 5 then return nil end
+  db.realms = db.realms or {}
+  local report = S.RekeyRealms(db, curBase)
+  S.RekeyShared(db, curBase)
+  db.version = 5
+  return report
+end
+
+-- 有資料的拍賣場鍵（自己的逐次掃描／每日紀錄、朋友的掃描），加上 extra（例如目前所在）。
+-- 排序：同規則名的聯盟、部落、中立，沒陣營的舊鍵排最後。
+function S.ListAHKeys(db, extra)
+  local set = {}
+  for k, ah in pairs(db.realms or {}) do
+    if #(ah.scans or {}) > 0 or next(ah.daily or {}) ~= nil then set[k] = true end
+  end
+  for _, sh in pairs(db.shared or {}) do
+    for k, ah in pairs(sh) do
+      if #(ah.scans or {}) > 0 then set[k] = true end
+    end
+  end
+  if extra then set[extra] = true end
+  local list = {}
+  for k in pairs(set) do list[#list + 1] = k end
+  table.sort(list, function(a, b)
+    local ba, fa = S.SplitAHKey(a)
+    local bb, fb = S.SplitAHKey(b)
+    local oa, ob = S.FACTION_ORDER[fa or ""] or 9, S.FACTION_ORDER[fb or ""] or 9
+    if (oa == 9) ~= (ob == 9) then return oa < ob end
+    if ba ~= bb then return ba < bb end
+    if oa ~= ob then return oa < ob end
+    return a < b
+  end)
+  return list
+end
+
+-- 某個拍賣場的資料量：自己的掃描數、朋友的掃描數、每日紀錄天數
+function S.CountAHKey(db, key)
+  local ah = (db.realms or {})[key] or {}
+  local own, friends, days = #(ah.scans or {}), 0, 0
+  for _ in pairs(ah.daily or {}) do days = days + 1 end
+  for _, sh in pairs(db.shared or {}) do
+    local a = sh[key]
+    if a then friends = friends + #(a.scans or {}) end
+  end
+  return own, friends, days
+end
+
+-- 文字（指令參數）→ 拍賣場鍵。可打 聯盟／部落／中立（或英文、a／h／n）或完整鍵，不分大小寫。
+function S.FindAHKey(keys, text, curBase)
+  text = tostring(text or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
+  if text == "" then return nil end
+  local alias = { ["聯盟"] = "Alliance", alliance = "Alliance", a = "Alliance",
+                  ["部落"] = "Horde", horde = "Horde", h = "Horde",
+                  ["中立"] = "Neutral", neutral = "Neutral", n = "Neutral" }
+  local fac = alias[text]
+  if fac then
+    for _, k in ipairs(keys) do
+      local base, f = S.SplitAHKey(k)
+      if f == fac and (not curBase or base == curBase) then return k end
+    end
+    if curBase then return curBase .. " " .. fac end
+    for _, k in ipairs(keys) do
+      local _, f = S.SplitAHKey(k)
+      if f == fac then return k end
+    end
+    return nil
+  end
+  for _, k in ipairs(keys) do
+    if k:lower() == text or S.AHKeyLabel(k):lower() == text then return k end
+  end
+  return nil
 end
 
 -- ---- 物品資料精簡存放 ----

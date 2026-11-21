@@ -60,7 +60,7 @@ L.execute(r'''
   dbB = { realms = {}, items = { ["2589"] = { name = "已有名稱", sell = 10 } } }
   added1, newItems1 = AHSnapshot.ImportInbox(dbB, outNamed, NOW, 30)
   added2 = AHSnapshot.ImportInbox(dbB, outNamed, NOW, 30)
-  shB = dbB.shared["阿明"].PvE
+  shB = dbB.shared["阿明"]["PvE Alliance"]   -- 掃描地點貿易區 → 聯盟拍賣場
   n_after = #shB.scans
 ''')
 check('匯入 2 次掃描', G.added1['阿明'], 2)
@@ -108,7 +108,7 @@ L.execute(r'''
   }, "~")
   addedC = AHSnapshot.ImportInbox(dbC, inbox, NOW, 30)
   meiRows = 0
-  for _ in pairs(dbC.shared["小美"].PvE.scans[1].items) do meiRows = meiRows + 1 end
+  for _ in pairs(dbC.shared["小美"]["PvE Alliance"].scans[1].items) do meiRows = meiRows + 1 end
 ''')
 check('兩個來源', (G.addedC['小美'], G.addedC['阿明']), (1, 1))
 check('壞的 R 列丟掉、未知類型略過', G.meiRows, 1)
