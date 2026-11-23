@@ -2,8 +2,8 @@
 ## Title: |cffe2b857Journey Together|r Forever
 ## Notes: Level together with your fellowship, chapter by chapter.
 ## Author: Vaderstrom
-## Version: v2.0.0
-## SavedVariables: JourneyTogetherForeverDB
+## Version: v2.1.0
+## SavedVariables: JourneyTogetherForeverDB, JTFzhTWNames
 ## OptionalDeps: Questie
 ## SavedVariablesPerCharacter: JourneyTogetherForeverCharDB
 ## IconTexture: Interface\AddOns\JourneyTogetherForever\Media\LogoSmall
@@ -24,6 +24,7 @@ Data\Presets.lua
 Data\DungeonQuests.lua
 Data\QuestLists.lua
 Data\QuestChains.lua
+Locales\zhTW_Names.lua
 Rules\Rules.lua
 Rules\Permissions.lua
 Rules\Milestones.lua
@@ -40,6 +41,7 @@ Fellowship\Firsts.lua
 Fellowship\Challenges.lua
 Fellowship\ChallengeWatch.lua
 Fellowship\Quests.lua
+Fellowship\Spots.lua
 Fellowship\QuestLists.lua
 Fellowship\Room.lua
 Fellowship\Ready.lua
@@ -69,13 +71,13 @@ UI\CharacterList.lua
 UI\Models.lua
 UI\OtherAddons.lua
 UI\MapMark.lua
+UI\BookMap.lua
 UI\Pages.lua
 UI\Pages\Welcome.lua
 UI\Pages\Create.lua
 UI\Pages\Join.lua
 UI\Pages\Heroes.lua
 UI\Pages\Gatherings.lua
-UI\Pages\Manage.lua
 UI\Pages\Rules.lua
 UI\Pages\Overview.lua
 UI\Pages\Setup.lua

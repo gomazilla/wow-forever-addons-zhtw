@@ -10,7 +10,10 @@
       "Core/Util.lua",
       "UI/Pages/Settings.lua",
       "UI/Theme.lua",
-      "Fellowship/Conflicts.lua"
+      "Fellowship/Conflicts.lua",
+      "Locales/zhTW_Names.lua",
+      "UI/Pages/Quests.lua",
+      "Fellowship/QuestLists.lua"
     ]
   }
 }
